@@ -109,10 +109,23 @@ def get_z_src(src):
 
 #------------------------------------------------------------------------
 
-def substract_continuum(src_path, output_path, snr_min = 15):
+def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
     """
-    Take a source file as an input, substract the continuum of the cube aroud a given line
-    and save the output
+    Take a source file as an input, substract the continuum of the cube around a given line/doublet
+    and save the output.
+    inputs:
+        -src_path: the path of the source file
+        
+        -output_path: the path of the galpak directory (not the specific path where the cube must be saved)
+        
+        -snr_min: the SNR limit of the specified line for the continuum substraction to be performed
+        
+        - line: the target emission line around which we want to extract the cube. Could be:
+                OII, OIII5007, HALPHA, 
+        
+    output: 
+        - a cube of 32 spaxel centered on the emission line.
+        - a pdf with the images before and after substraction and the spectrum
     """
 
     # First we open the source:
@@ -133,18 +146,31 @@ def substract_continuum(src_path, output_path, snr_min = 15):
         print("WARNING: No redshift")
 
     # we get the SNR:
-    try:
-        oii_3726_snr = get_line_feature(src, line="OII3726", feature="SNR")
-        oii_3729_snr = get_line_feature(src, line="OII3729", feature="SNR")
-        print("Z = ", z_src, " OII SNR = ", oii_3726_snr, oii_3729_snr)
-    except:
-        oii_snr = 0
-        print("Z = ", z_src, " WARNING: no [OII] SNR")
+    if line == "OII":
+        try:
+            oii_3726_snr = get_line_feature(src, line="OII3726", feature="SNR")
+            oii_3729_snr = get_line_feature(src, line="OII3729", feature="SNR")
+            line_snr = max(oii_3726_snr, oii_3729_snr)
+            print("Z = ", z_src, " OII SNR = ", oii_3726_snr, oii_3729_snr)
+        except:
+            line_snr = 0
+            print("Z = ", z_src, " WARNING: no [OII] SNR")
+    else:
+        try:
+            line_snr = get_line_feature(src, line= line, feature="SNR")
+            print("Z = ", z_src," ", line, " SNR = ", line_snr)
+        except:
+            line_snr = 0
+            print("Z = ", z_src, " WARNING: no ", line, " SNR")
+       
 
-    if z_src >= zmin_oii and z_src <= zmax_oii and max(oii_3726_snr, oii_3729_snr) >= snr_min:
+    if z_src >= zmin_oii and z_src <= zmax_oii and line_snr >= snr_min:
 
         os.makedirs(src_output_path, exist_ok=True)
 
+        # We open the line table from the source:
+        t = src.tables["PL_LINES"]
+    
         # then we open the cube and save a copy.
         cube = src.cubes["MUSE_CUBE"]
         cube.write(cube_output_path)
@@ -152,12 +178,18 @@ def substract_continuum(src_path, output_path, snr_min = 15):
 
         # We proceed to the continuum substraction:
         # the wavelength of the observed lines:
-        L_oii_1_obs = L_oii_1 * (1 + z_src)
-        L_oii_2_obs = L_oii_2 * (1 + z_src)
-        L_central_oii = (L_oii_1_obs + L_oii_2_obs) /2
-
+        if line == "OII":
+            tt1 = t[t["LINE"] == "OII3726"]
+            tt2 = t[t["LINE"] == "OII3729"]
+            L_oii_1_obs = tt1["LBDA_REST"][0] * (1 + tt1["Z"][0])
+            L_oii_2_obs = tt2["LBDA_REST"][0] * (1 + tt2["Z"][0])
+            L_central = (L_oii_1_obs + L_oii_2_obs) /2
+        else:
+            tt = t[t["LINE"] == line]
+            L_central = tt["LBDA_REST"][0] * (1 + tt["Z"][0])
+            
         # the corresponding pixel is:
-        central_pix = int(np.round(cube.wave.pixel(L_central_oii)))
+        central_pix = int(np.round(cube.wave.pixel(L_central)))
         min_pix = central_pix - 16
         max_pix = central_pix + 15
         nb_min_pix = central_pix - 9 # for the narrow band image
@@ -171,8 +203,8 @@ def substract_continuum(src_path, output_path, snr_min = 15):
         # the left, right and central cube:
         cube_left = cube[left_min: min_pix, :, :]
         cube_right = cube[max_pix: right_max, :, :]
-        cube_oii = cube[min_pix: max_pix, :, :]
-        cube_oii_nb = cube[nb_min_pix: nb_max_pix, :, :]
+        cube_central = cube[min_pix: max_pix, :, :]
+        cube_central_nb = cube[nb_min_pix: nb_max_pix, :, :]
 
         # the continuum estimation:
         cont_left = cube_left.mean(axis=0)
@@ -180,18 +212,18 @@ def substract_continuum(src_path, output_path, snr_min = 15):
         cont_mean = 0.5 * (cont_left + cont_right)
 
         # continuum substraction:
-        cube_oii_nocont = cube_oii - cont_mean
-        cube_oii_nb_nocont = cube_oii_nb - cont_mean
+        cube_central_nocont = cube_central - cont_mean
+        cube_central_nb_nocont = cube_central_nb - cont_mean
         
         # We get the source mask:
         mask_obj = src.images["MASK_OBJ"]
         ma = mask_obj.data
         mask = np.ma.getdata(ma)
         l = cube.shape[0]
-        l_oii = cube_oii.shape[0]
-        l_nb = cube_oii_nb.shape[0]
+        l_central = cube_central.shape[0]
+        l_nb = cube_central_nb.shape[0]
         M = np.repeat(mask[np.newaxis, :, :], l, axis=0) # the 3D mask for the cube
-        M_oii = np.repeat(mask[np.newaxis, :, :], l_oii, axis=0) # the 3D mask for the oii cube
+        M_central = np.repeat(mask[np.newaxis, :, :], l_central, axis=0) # the 3D mask for the line cube
         M_nb = np.repeat(mask[np.newaxis, :, :], l_nb, axis=0) # the 3D mask for the narrow band cube
         
         # the SNR estimation:
@@ -199,7 +231,7 @@ def substract_continuum(src_path, output_path, snr_min = 15):
             noise_left = (cube_left.data).std(axis = 0)
             noise_right = (cube_right.data).std(axis = 0)
             avg_noise = 0.5*(noise_left + noise_right) # the map of noise per pixel
-            signal = (cube_oii_nocont.data).max(axis = 0)
+            signal = (cube_central_nocont.data).max(axis = 0)
             snr = signal/avg_noise # this is a map of SNR per pixel.
             snr_source = snr*mask_obj
             snr_max = snr_source.max() #the maximum snr among pixels
@@ -209,42 +241,42 @@ def substract_continuum(src_path, output_path, snr_min = 15):
             snr_max = 0
             
         fsf = src.get_FSF()
-        psf_fwhm = fsf.get_fwhm(L_oii_1_obs)
-        lsf_fwhm = (5.835e-8) * L_oii_1_obs ** 2 - 9.080e-4 * L_oii_1_obs + 5.983  # from Bacon 2017
-        d = np.array([psf_fwhm, lsf_fwhm, oii_3726_snr, oii_3729_snr, snr_max])
-        col = ["psf_fwhm", "lsf_fwhm", "snr_3726_from_src","snr_3729_from_src", "snr_max"]
+        psf_fwhm = fsf.get_fwhm(L_central)
+        lsf_fwhm = (5.835e-8) * L_central ** 2 - 9.080e-4 * L_central + 5.983  # from Bacon 2017
+        d = np.array([psf_fwhm, lsf_fwhm, line_snr, snr_max])
+        col = ["psf_fwhm", "lsf_fwhm", "snr_from_src", "snr_max"]
         df = pd.DataFrame(data = [d], columns = col)
-        df.to_csv(src_output_path+"/"+"oii_snr.txt", index = False)
+        df.to_csv(src_output_path+"/"+line+"_snr.txt", index = False)
 
         # We make a pdf of the continuum substration:
-        pdf_name = src_output_path+"/"+ src_name+"_continuum_sub.pdf"
+        pdf_name = src_output_path+"/"+ src_name+"_"+ line +"_continuum_sub.pdf"
         pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_name)
 
 
-        ima_oii = cube_oii.sum(axis=0)
-        ima_oii_nb_nocont = cube_oii_nb_nocont.sum(axis=0)
-        cube_oii_nb_nocont_masked = cube_oii_nb_nocont * M_nb
-        ima_oii_nb_nocont_masked = cube_oii_nb_nocont_masked.sum(axis=0)
+        ima_central = cube_central.sum(axis=0)
+        ima_central_nb_nocont = cube_central_nb_nocont.sum(axis=0)
+        cube_central_nb_nocont_masked = cube_central_nb_nocont * M_nb
+        ima_central_nb_nocont_masked = cube_central_nb_nocont_masked.sum(axis=0)
         title = src_name + " z = " + str(z_src)
         fig = plt.figure(figsize=(12, 10))
         fig.suptitle(title)
 
         plt.subplot(221)
         plt.title("before substraction")
-        ima_oii.plot(scale='arcsinh', colorbar='v', vmin=0, vmax=100)
+        ima_central.plot(scale='arcsinh', colorbar='v', vmin=0, vmax=100)
 
         plt.subplot(222)
-        title_after = "after substraction,  OII snr = " + str(np.round(oii_3726_snr, 2)) + " SNRmax = "+ str(np.round(snr_max, 2))
+        title_after = "after substraction "+ line+" snr = " + str(np.round(line_snr, 2)) + " SNRmax = "+ str(np.round(snr_max, 2))
         plt.title(title_after)
-        ima_oii_nb_nocont.plot(scale='arcsinh', colorbar='v', vmin=0, vmax=100)
+        ima_central_nb_nocont.plot(scale='arcsinh', colorbar='v', vmin=0, vmax=100)
 
         plt.subplot(223)
         plt.title("full spectrum")
-        plt.axvline(L_oii_1_obs, color="black", linestyle="--", alpha=0.3)
-        plt.axvline(L_oii_1_obs - 20 - 150, color="lightgray", linestyle=":")
-        plt.axvline(L_oii_1_obs - 20, color="lightgray", linestyle=":")
-        plt.axvline(L_oii_1_obs + 20 + 150, color="lightgray", linestyle=":")
-        plt.axvline(L_oii_1_obs + 20, color="lightgray", linestyle=":")
+        plt.axvline(L_central, color="black", linestyle="--", alpha=0.3)
+        plt.axvline(L_central - 20 - 150, color="lightgray", linestyle=":")
+        plt.axvline(L_central - 20, color="lightgray", linestyle=":")
+        plt.axvline(L_central + 20 + 150, color="lightgray", linestyle=":")
+        plt.axvline(L_central + 20, color="lightgray", linestyle=":")
         cube_masked = cube*M
         sp = cube_masked.sum(axis = (1,2))
         #sp = cube_masked[:, 15, 15]
@@ -252,15 +284,16 @@ def substract_continuum(src_path, output_path, snr_min = 15):
         plt.axhline(0, color="red")
 
         plt.subplot(224)
-        plt.title("[OII] lines, continuum substracted")
-        cube_oii_nocont_masked = cube_oii_nocont*M_oii
-        sp = cube_oii_nocont_masked.sum(axis = (1,2))
+        title = line +" continuum substracted"
+        plt.title(title)
+        cube_central_nocont_masked = cube_central_nocont*M_central
+        sp = cube_central_nocont_masked.sum(axis = (1,2))
         #sp = cube_oii_nocont[:, 15, 15]
         sp.plot()
         plt.axhline(0, color="red")
 
-        cube_nocont_output_path = output_path_field + src_name + "/" + src_name + "_cube_nocont.fits"
-        cube_oii_nocont.write(cube_nocont_output_path)
+        cube_nocont_output_path = output_path_field + src_name + "/" + src_name +"_"+ line +"_cube_nocont.fits"
+        cube_central_nocont.write(cube_nocont_output_path)
         pdf.savefig(fig)
 
         pdf.close()
@@ -273,7 +306,7 @@ def substract_continuum(src_path, output_path, snr_min = 15):
 
 #-------------------------------------------------------------------------
 
-def substract_all_continuum(field_list, input_path, output_path, snr_min = 15):
+def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, line = "OII"):
     """
     extract the continuum around the oii line for all the sources in the input folder
     """
@@ -295,7 +328,7 @@ def substract_all_continuum(field_list, input_path, output_path, snr_min = 15):
                 src_input_path = input_path_field + src_file
                 src_output_path = output_path_field
                 try:    
-                    fig = substract_continuum(src_input_path, output_path, snr_min = snr_min)
+                    fig = substract_continuum(src_input_path, output_path, snr_min = snr_min, line = line)
                     if fig != 0:
                         pdf.savefig(fig)
                 except:
