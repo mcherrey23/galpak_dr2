@@ -341,9 +341,10 @@ def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, l
 
 #-----------------------------------------------------------------------------
 
-def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh",autorun = False, save = False, save_name = "run1", overwrite = True, continuum_fit = False, **kwargs):
+def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh",autorun = False, save = False, overwrite = True, line = "OII", **kwargs):
     """
     run galpak for a single source
+    line could be OII, OIII, Ha, or cont to run on continuum.
     """
 
     # First we open the source:
@@ -352,16 +353,12 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
 
     src_name = src_path[-28:-5] # the source name in the format "JxxxxXxxxx_source_xxxxx"
     field =  src_path[-28:-18] # the field id in the format JxxxxXxxxx"
+    save_name = "run_"+line
 
 
     output_path_field = output_path + field + "/"
     src_output_path = output_path_field + src_name+ "/"
-    cube_nocont_path = src_output_path + src_name + "_cube_nocont.fits"
     #cube_nocont = Cube(cube_nocont_path)
-    
-    cube_cont_path_list = glob.glob(src_output_path + src_name + "_cube_cont*.fits")
-    cube_cont_path = cube_cont_path_list[0]
-    #cube_cont = Cube(cube_cont_path)
     
     output_run_list = os.listdir(src_output_path)
 
@@ -389,12 +386,15 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
 
 
     # we define the model:
-    if continuum_fit == False:
+    if line  != "cont":
         model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve= rotation_curve, redshift=z_src, line = galpak.OII)
+        cube_nocont_path = src_output_path + src_name + "_"+ line+ "_cube_nocont.fits"
         cube_nocont = Cube(cube_nocont_path)
         cube_to_fit = cube_nocont
     else:
         model = galpak.ModelSersic2D(flux_profile = flux_profile, redshift=z_src)
+        cube_cont_path_list = glob.glob(src_output_path + src_name + "_cube_cont*.fits")
+        cube_cont_path = cube_cont_path_list[0]
         cube_cont = Cube(cube_cont_path)
         cube_to_fit = cube_cont
         
@@ -425,8 +425,8 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
 
 
 def run_galpak_all(input_path, output_path, field_list, snr_min = 15, mag_sdss_r_max = 26,\
-                   flux_profile = "sersic", rotation_curve = "tanh",autorun = False, continuum_fit = False,\
-                   save = False, save_name = "run1", overwrite = True, **kwargs):
+                   flux_profile = "sersic", rotation_curve = "tanh",autorun = False,\
+                   save = False, line = "OII", overwrite = True, **kwargs):
     """
     run galpak for all the source
     """
@@ -477,18 +477,18 @@ def run_galpak_all(input_path, output_path, field_list, snr_min = 15, mag_sdss_r
                     print("WARNING: No oii SNR")
 
                 #print("snr_min = ", snr_min)
-                if continuum_fit == False:
+                if line != "cont":
                     if max(oii_3726_snr_from_src, oii_3729_snr_from_src) >= snr_min:
                         print("**** RUN GALPAK")
                         try: 
                             run_galpak(src_path, output_path, \
                                        flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
-                                   save = save, save_name = save_name, continuum_fit = continuum_fit, overwrite = overwrite,\
+                                   save = save, line = line, overwrite = overwrite,\
                                        **kwargs)
                         except:
                             print(" !!!! RUN FAILED !!!!")
                             
-                elif continuum_fit == True:
+                else:
                     try:
                         t = src.tables["SPECPHOT_DR2"]
                         tt = t[t["ID"] == src.header["ID"]]
@@ -502,7 +502,7 @@ def run_galpak_all(input_path, output_path, field_list, snr_min = 15, mag_sdss_r
                         try: 
                             run_galpak(src_path, output_path, \
                                        flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
-                                   save = save, save_name = save_name, continuum_fit = continuum_fit, overwrite = overwrite,\
+                                   save = save, line = line, overwrite = overwrite,\
                                        **kwargs)
                         except:
                             print(" !!!! RUN FAILED !!!!")
@@ -516,7 +516,7 @@ def extract_result_single_run(run_path, src_output_path):
     convergence_ext = "galaxy_parameters_convergence.dat"
     stats_ext = "stats.dat"
     model_ext = "model.txt"
-    oii_snr_ext = "oii_snr.txt"
+    line_snr_ext = "*_snr.txt"
     
     run_file_list = os.listdir(run_path)
     src_file_list = os.listdir(src_output_path)
@@ -530,9 +530,11 @@ def extract_result_single_run(run_path, src_output_path):
             stats_path = run_path + f
         if model_ext in f:
             model_path = run_path + f
-    for f in src_file_list: 
-        if oii_snr_ext in f:
-            oii_snr_path = src_output_path + f
+    try:
+        line_snr_path = glob.glob(src_output_path + line_snr_ext)[0] # WARNING move the oii_snr.txt in the run directory..
+    except:
+        print("no snr file")
+        line_snr_path = ""
             
     #print(gal_param_path)
     #print(convergence_path)
@@ -549,16 +551,23 @@ def extract_result_single_run(run_path, src_output_path):
     model_df = model_df.reset_index(drop = True)
     model_df.columns = model_df.columns.str.strip()
     model_df.loc[0].str.strip()
-    oii_snr_df = pd.read_csv(oii_snr_path, sep = ",", index_col= None)
+    if line_snr_path != "":
+        line_snr_df = pd.read_csv(line_snr_path, sep = ",", index_col= None)
     
     #--- for the galaxy parameters file ------
-    gal_param_cols = ["x", "y", "z", "flux", "radius", "sersic_n", "inclination", "pa", "turnover_radius", \
-                     "maximum_velocity", "velocity_dispersion"]
-    gal_param_error_cols = [col + "_err"  for col in gal_param_cols]
-    
-    gal_param = gal_param_df[gal_param_cols]
+    try:
+        gal_param_cols = ["x", "y", "z", "flux", "radius", "sersic_n", "inclination", "pa", "turnover_radius", \
+                         "maximum_velocity", "velocity_dispersion"]
+        gal_param_error_cols = [col + "_err"  for col in gal_param_cols]
+        gal_param = gal_param_df[gal_param_cols]
+    except:
+        gal_param_cols = ["x", "y", "z", "flux", "radius", "sersic_n", "inclination", "pa"]
+        gal_param_error_cols = [col + "_err"  for col in gal_param_cols]
+        gal_param = gal_param_df[gal_param_cols]
+        
     gal_param_values = np.array(gal_param.loc[0])
     gal_param_errors = np.array(gal_param.loc[1])
+
     
     gal_param_data = np.array(list(gal_param_values) + list(gal_param_errors))
     gal_param_all_cols = np.array(gal_param_cols + gal_param_error_cols)
@@ -578,12 +587,16 @@ def extract_result_single_run(run_path, src_output_path):
     model = model_df
     
     #--- for the SNR file --------
-    oii_snr = oii_snr_df
+    if line_snr_path != "":
+        line_snr = line_snr_df
 
     #print(oii_snr)    
     
     # build the final dataframe:
-    DF = pd.concat([gal_param_results, convergence, stats, model, oii_snr], axis = 1)
+    if line_snr_path != "":
+        DF = pd.concat([gal_param_results, convergence, stats, model, line_snr], axis = 1)
+    else:
+        DF = pd.concat([gal_param_results, convergence, stats, model], axis = 1)
     
     return DF
 
@@ -610,7 +623,7 @@ def extract_results_all(output_path):
                     print(" ",s)
                     for r in run_list:
                         run_output_path = src_output_path + r +"/"
-                        if os.path.isdir(run_output_path):
+                        if os.path.isdir(run_output_path) and ("run" in r) and (len(os.listdir(run_output_path))!=0):
                             print("    ",r)
                             try:
                                 df = extract_result_single_run(run_output_path, src_output_path)
