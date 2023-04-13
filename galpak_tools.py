@@ -87,6 +87,7 @@ def get_line_feature(src, line="OII3726", feature="SNR"):
 
     if line in PL_LINES["LINE"]:
         l = PL_LINES[PL_LINES["LINE"] == line]
+        l = l[l["FAMILY"] == "all"]
         return l[feature][0]
 
     return 0
@@ -164,7 +165,7 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
             print("Z = ", z_src, " WARNING: no ", line, " SNR")
        
 
-    if z_src >= zmin_oii and z_src <= zmax_oii and line_snr >= snr_min:
+    if z_src <= zmax_oii and line_snr >= snr_min:
 
         os.makedirs(src_output_path, exist_ok=True)
 
@@ -186,6 +187,7 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
             L_central = (L_oii_1_obs + L_oii_2_obs) /2
         else:
             tt = t[t["LINE"] == line]
+            tt = tt[tt["FAMILY"] == "all"]
             L_central = tt["LBDA_REST"][0] * (1 + tt["Z"][0])
             
         # the corresponding pixel is:
@@ -819,7 +821,7 @@ def build_all_continuum(field_list, input_path, output_path, mag_sdss_r_max = 26
 
 #-----------------------------------------
 
-def build_velocity_map(src_path, output_path, snr_min = 3, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=2.):
+def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=2.):
     # we open the source file:
     src = Source.from_file(src_path)
     src_name = src_path[-28:-5] # the source name in the format "JxxxxXxxxx_source_xxxxx"
@@ -827,8 +829,10 @@ def build_velocity_map(src_path, output_path, snr_min = 3, commonw=True, dv=500.
     field =  src_path[-28:-18] # the field id in the format JxxxxXxxxx"
     output_path_field = output_path + field + "/"
     src_output_path = output_path_field + src_name+ "/"
-    camel_path = src_output_path +"camel"
+    camel_path = src_output_path +"camel_"+line
     os.makedirs(camel_path, exist_ok=True)
+    
+    lines_dict = {"HALPHA":"ha", "OII":"o2", "OIII5007": "o3"}
     
     # We extract the redshift of the source:
     try:
@@ -846,33 +850,54 @@ def build_velocity_map(src_path, output_path, snr_min = 3, commonw=True, dv=500.
     #cube.write(cube_output_path)
     
     # we get the SNR:
-    try:
-        oii_3726_snr = get_line_feature(src, line="OII3726", feature="SNR")
-        oii_3729_snr = get_line_feature(src, line="OII3729", feature="SNR")
-        print("Z = ", z_src, " OII SNR = ", oii_3726_snr, oii_3729_snr)
-    except:
-        oii_snr = 0
-        print("Z = ", z_src, " WARNING: no [OII] SNR")
+    # we get the SNR:
+    if line == "OII":
+        try:
+            oii_3726_snr = get_line_feature(src, line="OII3726", feature="SNR")
+            oii_3729_snr = get_line_feature(src, line="OII3729", feature="SNR")
+            line_snr = max(oii_3726_snr, oii_3729_snr)
+            print("Z = ", z_src, " OII SNR = ", oii_3726_snr, oii_3729_snr)
+        except:
+            line_snr = 0
+            print("Z = ", z_src, " WARNING: no [OII] SNR")
+    else:
+        try:
+            line_snr = get_line_feature(src, line= line, feature="SNR")
+            print("Z = ", z_src," ", line, " SNR = ", line_snr)
+        except:
+            line_snr = 0
+            print("Z = ", z_src, " WARNING: no ", line, " SNR")
+       
 
-    if z_src >= zmin_oii and z_src <= zmax_oii and max(oii_3726_snr, oii_3729_snr) >= snr_min:
+    if z_src <= zmax_oii and line_snr >= snr_min:
+        
+        # We open the line table from the source:
+        t = src.tables["PL_LINES"]
+        
         # We proceed to the continuum substraction:
         # the wavelength of the observed lines:
-        L_oii_1_obs = L_oii_1 * (1 + z_src)
-        L_oii_2_obs = L_oii_2 * (1 + z_src)
-        L_central_oii = (L_oii_1_obs + L_oii_2_obs) /2
-
+        if line == "OII":
+            tt1 = t[t["LINE"] == "OII3726"]
+            tt2 = t[t["LINE"] == "OII3729"]
+            L_oii_1_obs = tt1["LBDA_REST"][0] * (1 + tt1["Z"][0])
+            L_oii_2_obs = tt2["LBDA_REST"][0] * (1 + tt2["Z"][0])
+            L_central = (L_oii_1_obs + L_oii_2_obs) /2
+        else:
+            tt = t[t["LINE"] == line]
+            L_central = tt["LBDA_REST"][0] * (1 + tt["Z"][0])
+            
         # the corresponding pixel is:
-        central_pix = int(np.round(cube.wave.pixel(L_central_oii)))
+        central_pix = int(np.round(cube.wave.pixel(L_central)))
         min_pix = central_pix - 16
         max_pix = central_pix + 15
 
-        # the left, right and central cube:
-        cube_oii = cube[min_pix: max_pix, :, :]
-        cube_oii_path = src_output_path + src_name + "_oii_cube.fits"
-        cube_oii.write(cube_oii_path)
+        # the central cube:
+        cube_central = cube[min_pix: max_pix, :, :]
+        cube_central_path = src_output_path + src_name + "_"+lines_dict[line]+"_cube.fits"
+        cube_central.write(cube_central_path)
 
         # then we build the needed cubes:
-        hdul = fits.open(cube_oii_path)
+        hdul = fits.open(cube_central_path)
         cube_data = hdul[1].data
         cube_header = hdul[1].header
         hdu = fits.PrimaryHDU(data=cube_data, header = cube_header)
@@ -885,16 +910,16 @@ def build_velocity_map(src_path, output_path, snr_min = 3, commonw=True, dv=500.
 
         # the parameters to create the config file is then:
         path = camel_path+"/"
-        cubefile = cube_oii_path
+        cubefile = cube_central_path
         #cubefile = src_output_path + src_name + "_cube_nocont.fits"
         varfile = camel_path + "/var_data.fits"
         catfile =  "catfile.csv"
-        lines = "o2"
+        lines = lines_dict[line]
         suffixeout = camel_path+"/camel"
 
         # we create the configuration file:
         out = cc.create_config(path, cubefile, varfile, catfile, lines, suffixeout, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth)
-        filename = camel_path +"/camel_"+str(src_id)+"_o2.config"
+        filename = camel_path +"/camel_"+str(src_id)+"_"+lines_dict[line] +".config"
         #/muse/MG2QSO/private/analysis/galpak_dr2/J0014m0028/J0014m0028_source-11122/camel/camel_11122_o2.config
         # then we run camel:
         cml.camel(str(filename), plot=True)
@@ -902,9 +927,9 @@ def build_velocity_map(src_path, output_path, snr_min = 3, commonw=True, dv=500.
         # Then we create an image with the velocity map:
         # for that we use the mask of the source:
 
-        vel = "/camel_"+ str(src_id) +"_o2_vel_common.fits"
-        snr = "/camel_"+ str(src_id) +"_o2_snr_common.fits"
-        disp = "/camel_"+ str(src_id) +"_o2_disp_common.fits"
+        vel = "/camel_"+ str(src_id) +"_"+lines_dict[line] +"_vel_common.fits"
+        snr = "/camel_"+ str(src_id) +"_"+lines_dict[line] +"_snr_common.fits"
+        disp = "/camel_"+ str(src_id) +"_"+lines_dict[line] +"_disp_common.fits"
         hdul_vel = fits.open(camel_path+vel)
         hdul_snr = fits.open(camel_path+snr)
         hdul_disp = fits.open(camel_path+disp)
@@ -919,7 +944,7 @@ def build_velocity_map(src_path, output_path, snr_min = 3, commonw=True, dv=500.
         extent_arcsec = np.array([-0.2*15, 0.2*15,-0.2*15, 0.2*15])
         extent_kpc = extent_arcsec*kpc_per_arcsec
 
-        pdf_name = src_output_path+"/"+ src_name+"_oii_velmaps.pdf"
+        pdf_name = src_output_path+"/"+ src_name+"_"+line +"_velmaps.pdf"
         pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_name)
 
         fig = plt.figure(figsize = (16,12))
