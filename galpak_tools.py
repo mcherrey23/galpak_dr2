@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import galpak
-#from galpak import DefaultModel, ModelSersic
 
 import os
 
@@ -87,7 +86,9 @@ def get_line_feature(src, line="OII3726", feature="SNR"):
 
     if line in PL_LINES["LINE"]:
         l = PL_LINES[PL_LINES["LINE"] == line]
-        l = l[l["FAMILY"] == "all"]
+        f1 = l["FAMILY"] == "all"
+        f2 = l["FAMILY"] == "balmer"
+        l = l[f1 | f2]
         return l[feature][0]
 
     return 0
@@ -187,7 +188,9 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
             L_central = (L_oii_1_obs + L_oii_2_obs) /2
         else:
             tt = t[t["LINE"] == line]
-            tt = tt[tt["FAMILY"] == "all"]
+            f1 = tt["FAMILY"] == "all"
+            f2 = tt["FAMILY"] == "balmer"
+            tt = tt[f1 | f2]
             L_central = tt["LBDA_REST"][0] * (1 + tt["Z"][0])
             
         # the corresponding pixel is:
@@ -343,11 +346,12 @@ def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, l
 
 #-----------------------------------------------------------------------------
 
-def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh",autorun = False, save = False, overwrite = True, line = "OII", **kwargs):
+def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh", thickness_profile = "gaussian", autorun = False, save = False, overwrite = True, line = "OII", **kwargs):
     """
     run galpak for a single source
     line could be OII, OIII, Ha, or cont to run on continuum.
     """
+    print("OPOPOPOPOPOOO")
 
     # First we open the source:
     src = Source.from_file(src_path)
@@ -387,9 +391,10 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         fwhm=(5.835e-8) * L_oii_1_obs ** 2 - 9.080e-4 * L_oii_1_obs + 5.983)  # from Bacon 2017
 
 
+    
     # we define the model:
     if line  != "cont":
-        model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve= rotation_curve, redshift=z_src, line = galpak.OII)
+        model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve= rotation_curve, redshift=z_src, thickness_profile = thickness_profile)
         cube_nocont_path = src_output_path + src_name + "_"+ line+ "_cube_nocont.fits"
         cube_nocont = Cube(cube_nocont_path)
         cube_to_fit = cube_nocont
@@ -406,6 +411,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         gk = galpak.autorun(cube_to_fit, model=model, instrument=instru, **kwargs)
     else:
         gk = galpak.GalPaK3D(cube_to_fit, model=model, instrument=instru)
+        
         gk.run_mcmc(**kwargs)
         
         
@@ -513,13 +519,16 @@ def run_galpak_all(input_path, output_path, field_list, snr_min = 15, mag_sdss_r
 
 # -------------------------------------------------------
 
-def extract_result_single_run(run_path, src_output_path):
+def extract_result_single_run(run_name, src_output_path):
     gal_param_ext = "galaxy_parameters.dat"
     convergence_ext = "galaxy_parameters_convergence.dat"
     stats_ext = "stats.dat"
     model_ext = "model.txt"
     line_snr_ext = "*_snr.txt"
+    run_split = run_name.split("_") # we split the run name to get the line
+    line_name = run_split[1]
     
+    run_path = src_output_path + run_name + "/"
     run_file_list = os.listdir(run_path)
     src_file_list = os.listdir(src_output_path)
     #print(run_file_list)
@@ -532,15 +541,13 @@ def extract_result_single_run(run_path, src_output_path):
             stats_path = run_path + f
         if model_ext in f:
             model_path = run_path + f
-    try:
-        line_snr_path = glob.glob(src_output_path + line_snr_ext)[0] # WARNING move the oii_snr.txt in the run directory..
-    except:
-        print("no snr file")
-        line_snr_path = ""
-            
-    #print(gal_param_path)
-    #print(convergence_path)
-    #print(stats_path)
+    if line_name != "cont":
+        try:
+            line_snr_path = src_output_path + line_name + "_snr.txt"
+            #line_snr_path = glob.glob(src_output_path + line_snr_ext)[0] # WARNING move the oii_snr.txt in the run directory..
+        except:
+            print("no snr file")
+            line_snr_path = ""
     
     gal_param_df = pd.read_csv(gal_param_path, sep = "|", index_col= None)
     gal_param_df.columns = gal_param_df.columns.str.strip()
@@ -553,7 +560,7 @@ def extract_result_single_run(run_path, src_output_path):
     model_df = model_df.reset_index(drop = True)
     model_df.columns = model_df.columns.str.strip()
     model_df.loc[0].str.strip()
-    if line_snr_path != "":
+    if line_name != "cont":
         line_snr_df = pd.read_csv(line_snr_path, sep = ",", index_col= None)
     
     #--- for the galaxy parameters file ------
@@ -589,16 +596,20 @@ def extract_result_single_run(run_path, src_output_path):
     model = model_df
     
     #--- for the SNR file --------
-    if line_snr_path != "":
+    if line_name != "cont":
         line_snr = line_snr_df
 
     #print(oii_snr)    
     
     # build the final dataframe:
-    if line_snr_path != "":
+    if line_name != "cont":
         DF = pd.concat([gal_param_results, convergence, stats, model, line_snr], axis = 1)
     else:
         DF = pd.concat([gal_param_results, convergence, stats, model], axis = 1)
+    
+    # compute the corresponding SNR eff:
+    #muse_sampling = 0.2 #arcesc per pixel
+    #R["snr_eff"] = R["snr_max"]*R["radius"]*muse_sampling/R["psf_fwhm"]
     
     return DF
 
@@ -628,7 +639,7 @@ def extract_results_all(output_path):
                         if os.path.isdir(run_output_path) and ("run" in r) and (len(os.listdir(run_output_path))!=0):
                             print("    ",r)
                             try:
-                                df = extract_result_single_run(run_output_path, src_output_path)
+                                df = extract_result_single_run(r, src_output_path)
                                 df.insert(0, "field_id", [f])
                                 df.insert(1, "source_id", [s[-5:]])
                                 df.insert(2, "run_name", [r])
@@ -637,6 +648,13 @@ def extract_results_all(output_path):
                                 print("  !!! EXTRACTION FAILED !!!")
 
     Results = pd.concat(results_list, ignore_index= True)
+    
+    # Finally we compute the SNR eff for
+    muse_sampling = 0.2 #arcesc per pixel
+    """ 
+    What we want to do is to compute the SNR effective for a source (see Bouche 2015 and Bouche 2021). The SNR eff is useful to select sources because it takes into account the spatial extent of the source and the PSF. Indeed if the source is very small (on few pixels) we need a high OII SNR to deduce the kniematic. At the contrary if we have many pixels, even if the SNR per pixel is low, we can get a quite precise overall idea of the kinematics.
+    """
+    Results["snr_eff"] = Results["snr_max"]*Results["radius"]*muse_sampling/Results["psf_fwhm"]
     return Results
 
 
@@ -662,6 +680,9 @@ def delete_empty_runs(path, field_list):
                                     print("EMPTY DIR")
                                     os.rmdir(run_output_path)
     return
+
+
+
 
 #-----------------------------------------------------
 def build_continuum_cube(src_path, output_path, mag_sdss_r_max = 26, L_central = 6750, L_central_auto = True):
