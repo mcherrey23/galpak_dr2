@@ -655,6 +655,12 @@ def extract_results_all(output_path):
     What we want to do is to compute the SNR effective for a source (see Bouche 2015 and Bouche 2021). The SNR eff is useful to select sources because it takes into account the spatial extent of the source and the PSF. Indeed if the source is very small (on few pixels) we need a high OII SNR to deduce the kniematic. At the contrary if we have many pixels, even if the SNR per pixel is low, we can get a quite precise overall idea of the kinematics.
     """
     Results["snr_eff"] = Results["snr_max"]*Results["radius"]*muse_sampling/Results["psf_fwhm"]
+    print("Number of run extracted = ", len(Results))
+    
+    # Finally we rename the ID column to be consistent with other catalogs:
+    Results = Results.rename(columns={"source_id": "ID"})
+    Results["ID"] = Results["ID"].astype(int)
+    
     return Results
 
 
@@ -681,8 +687,275 @@ def delete_empty_runs(path, field_list):
                                     os.rmdir(run_output_path)
     return
 
+# -----------------------------------------------
+
+def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path, dv_abs_match = 0.5e6, export = False,\
+                               export_name = "results.csv"):
+    
+    # First we match the galpak results with the DR2:
+    R = match_DR2(galpak_res, dr2_path)
+    
+    # Then we match with the QSOs from field info:
+    R = match_qso(R, fields_info_path)
+    
+    # We compute the alpha parameter:
+    R = compute_alpha(R)
+    
+    # Then we open the absorptions:
+    Abs = pd.read_csv(Abs_path)
+    # We compute the Nb of galaxies per Abs:
+    
+    Abs = get_Nxxx_abs(Abs, R, bmax = 2000, dv = dv_abs_match)
+    Abs = get_Nxxx_abs(Abs, R, bmax = 100, dv = dv_abs_match)
+    # and we match the galaxies with the absorbers
+    R = match_absorptions_isolated_galaxies(R, Abs, dv = dv_abs_match)
+    
+    # We compute the number of neighbour for each galaxy:
+    R = get_Nxxx_neighb(R, radius = 150, dv = dv_abs_match) 
+    R = get_Nxxx_neighb(R, radius = 100, dv = dv_abs_match)
+    R = get_Nxxx_neighb(R, radius = 50, dv = dv_abs_match)
+    
+    # We identify the closest galaxy and it's distance:
+    R = identify_closest_neighbour(R)
+    
+    # We compute the number of neighbour around the LOS:
+    R = get_Nxxx_LOS_all(R, bmax = 100, dv = dv_abs_match)
+    R = get_Nxxx_LOS_all(R, bmax = 2000, dv = dv_abs_match)
+    
+    # Finally we export the result:
+    if export:
+        R.to_csv(export_name, index = False)
+    
+    return R
 
 
+# ------------------------------------------
+
+def match_DR2(galpak_res, dr2_path):
+    """
+    match the catalog of the galpak runs to the DR2 catalog.
+    """
+    # first we open the DR2 and re format the columns to be consistent with other scripts:
+    temp = Table.read(dr2_path, format='fits')
+    data = temp.to_pandas()
+    data = data.astype({'FIELD': 'string'})
+    data = data.rename(columns={"FIELD": "field_id"})
+    data = data.rename(columns={"white_ID": "WHITE_ID"})
+    f1 = data["Z"].isnull() == False
+    f2 = data["Z"] != 0
+    f3 = data["ZCONF"] != 0
+    df = data[f1 & f2 & f3]
+    
+    fields_list = df["field_id"].unique()
+    for f in fields_list:
+        idx = df.index[df["field_id"] == f].tolist()
+        df.loc[idx, "field_id"] = f[2:12]
+    
+    print("Nb of row in the DR2 catalog: ", len(df))
+    
+    R = pd.merge(df, galpak_res, how="left", on=["field_id", "ID"])
+    return R
+
+#---------------------------------------------------
+def match_qso(df, fields_info_path):
+    fields_info = pd.read_csv(fields_info_path)
+    fields_info = fields_info.rename({'PSF': 'PSF_qso', 'Comments': 'Comments_qso', 'depth': "depth_qso", \
+                                    'ebv_sandf': 'ebv_sandf_qso', 'ebv_planck': 'ebv_planck_qso', \
+                                'ebv_sfd': 'ebv_sfd_qso', "HST": "HST_qso", 'rmag': 'rmag_qso' }, axis='columns')
+    qso_sub = fields_info[["field_id", 'EXPTIME(s)','PSF_qso',\
+                        'Comments_qso', 'zqso_sdss', 'depth_qso',\
+                    'ebv_sfd_qso', 'ebv_sandf_qso', 'ebv_planck_qso', 'HST_qso', 'rmag_qso']]
+
+
+    df = df.merge(qso_sub, on = "field_id", how = "left")
+    
+    ra = fields_info["ra"]
+    dec = fields_info["dec"]
+
+    c = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
+    fields_info["ra_qso"] = c.ra.value
+    fields_info["dec_qso"] = c.dec.value
+    
+    ra = []
+    dec = []
+    for i, g in df.iterrows():
+        f = g["field_id"]
+        qso = fields_info[fields_info["field_id"] == f]
+        ra.append(qso["ra_qso"])
+        dec.append(qso["dec_qso"])
+
+    ra_qso = np.array(ra)
+    dec_qso = np.array(dec)
+    #print(ra_qso)
+    df["ra_qso"] = ra_qso
+    df["dec_qso"] = dec_qso
+    deg_to_rad = (1*u.degree).to(u.radian).value
+    
+    return df
+
+#--------------------------------------------------------
+def compute_alpha(R):
+        
+    ad = R["dec_qso"] - R["DEC"]
+    op = (R["ra_qso"] - R["RA"])*np.cos(2*np.pi*R["DEC"]/360)
+
+    theta = np.arctan(op/ad)
+    theta = theta*360/2/np.pi
+ 
+    alpha = theta%180 - R["pa"]%180
+    alpha = (alpha - 90)%180 - 90
+    alpha = np.abs(alpha)
+    R["alpha"] = alpha
+    
+    return R
+
+#-----------------------------------------------------------
+
+def match_absorptions_isolated_galaxies(R, Abs, dv = 0.5e6):
+    """
+    match the Abs dataframe describing the absorptions with the R dataframe containing the galaxies.
+    
+    dv: maximum velocity difference used to appariate an absorption with a galaxy
+    """
+   
+    pd.options.mode.chained_assignment = None
+    
+    R["REW_2796"] = 0
+    R["sig_REW_2796"] = 0
+    R["z_absorption"] = 0
+    R["z_absorption_dist"] = 0
+    R["N100_abs"] = 0
+    R["N2000_abs"] = 0
+    for j,i in R.iterrows():
+        T = Abs[Abs["field_name"] == i["field_id"]]
+        T["v_dist"] = abs(T["z_abs"] - i["Z"])*const.c.value/(1+i["Z"])
+        min_v_dist = T["v_dist"].min()
+        abs_min = T[T["v_dist"] == min_v_dist]
+        idx = R.index[R["ID"]== i["ID"]].to_list()[0]
+        R.loc[idx, "REW_2796" ] = abs_min["REW_2796"].mean()
+        R.loc[idx, "N100_abs"] = abs_min["N100_abs"].mean()
+        R.loc[idx, "N2000_abs"] = abs_min["N2000_abs"].mean()
+        try:
+            R.loc[idx, "sig_REW_2796"] = abs_min["sig_REW_2796"].mean()
+        except:
+            print("error")
+        R.loc[idx, "z_absorption"] = abs_min["z_abs"].mean()
+        R.loc[idx, "vel_absorption_dist"] = min_v_dist
+        
+
+    R["bool_absorption"] = 0
+    idx = R.index[R["vel_absorption_dist"] < dv].to_list()
+    R.loc[idx, "bool_absorption" ] = 1
+
+    R["REW_2796"] = R["bool_absorption"]*R["REW_2796"]
+    R["sig_REW_2796"] = R["sig_REW_2796"]*R["bool_absorption"]
+    R["z_absorption"] = R["z_absorption"]*R["bool_absorption"]
+    R["vel_absorption_dist"] = R["vel_absorption_dist"]*R["bool_absorption"]
+    R["N100_abs"] = R["N100_abs"]*R["bool_absorption"]
+    R["N2000_abs"] = R["N2000_abs"]*R["bool_absorption"]
+
+    return R
+
+#--------------------------------------
+def get_Nxxx_abs(Abs, R, bmax = 100, dv = 1e6):
+    """
+    Get the number of galaxies in a xxxkpc radius around the QSO LOS for each absorber.
+    
+    dv: maximum velocity difference between the absorption and the galaxies taken into account.
+    """
+    Nxxx = []
+    for i, absorption in Abs.iterrows():
+        f1 = np.abs(R["Z"] - absorption["z_abs"])*const.c.value/(1+absorption["z_abs"])<dv
+        f2 = R["field_id"] == absorption["field_name"]
+        f3 = R["B_KPC"]< bmax
+        F = R[f1 & f2 & f3]
+        Nxxx.append(len(F))
+    colname = "N"+str(bmax)+"_abs"
+    Abs[colname] = np.array(Nxxx)
+    return Abs
+
+# ---------------------------------------------------
+def get_Nxxx_neighb(R, radius = 100, dv = 1e6):
+    """
+    Get the number of neighbour galaxies within a given radius for each galaxy.
+    
+    dv: maximum velocity difference taken for taking into account a galaxy
+    """
+    label = "N"+str(radius)+"_neighb"
+    N_neighb = []
+    for i, gal in R.iterrows():
+        f1 = np.abs(R["Z"] - gal["Z"])*const.c.value/(1+gal["Z"])<dv
+        f2 = R["field_id"] == gal["field_id"]
+        #f3 = R["ID"] != gal["ID"]
+        #F = R[f1 & f2 & f3]
+        F = R[f1 & f2]
+        #print(F)
+        c1 = SkyCoord(gal["RA"]*u.degree, gal["DEC"]*u.degree)
+        c2 = SkyCoord(F["RA"]*u.degree, F["DEC"]*u.degree)
+        sep = c1.separation(c2)
+        F["dist"] = Distance(unit=u.kpc, z = gal["Z"]).value/((1+gal["Z"])**2)
+        F["neighb_dist"] = sep.radian*F["dist"]
+        F_filt = F[F["neighb_dist"]<radius]
+        N_neighb.append(len(F_filt))
+    R[label] = np.array(N_neighb)-1
+    return R
+
+
+#--------------------------------------------------
+def identify_closest_neighbour(R):
+       
+    is_closest = []
+    b_kpc_neighb = []
+    dv = 0.5e6
+    for i, g in R.iterrows():
+        field = g["field_id"]
+        z = g["Z"]
+        bool_abs = g["bool_absorption"]
+        z_abs = g["z_absorption"]
+        if bool_abs:
+            k1 = R["field_id"] == field
+            k2 = np.abs(R["Z"] - z_abs)*const.c.value/(1+z_abs)<dv
+            others = R[k1 & k2]
+            others.sort_values(by = "B_KPC", inplace = True, ignore_index = True)
+            #print(len(others))
+            if np.min(others["B_KPC"]) == g["B_KPC"]:
+                is_closest.append(1)
+                if len(others) >=2:
+                    #print(others["B_KPC"][1] - others["B_KPC"][0])
+                    b_kpc_neighb.append(others["B_KPC"][1] - others["B_KPC"][0])
+                else:
+                    b_kpc_neighb.append(500)
+            else:
+                is_closest.append(0)
+                b_kpc_neighb.append(0)
+        else:
+            is_closest.append(0)
+            b_kpc_neighb.append(0)
+
+    R["is_closest"] = is_closest
+    R["B_KPC_NEIGHB"] = b_kpc_neighb
+    return R
+
+
+#------------------------------------
+
+def get_Nxxx_LOS_all(R, bmax = 100, dv = 0.5e6):
+    """
+    for each galaxy g of R, it computes the number of galaxies in a redshift slice +-dv
+    centered on g, at an impact parameter inferior to bmax to the LOS.
+    """
+    
+    label = "N"+str(bmax)+"_LOS"
+    N_LOS = []
+    for i, g in R.iterrows():
+        
+        f1 = np.abs(R["Z"] - g["Z"])*const.c.value/(1+g["Z"])<dv
+        f2 = R["field_id"] == g["field_id"]
+        f3 = R["B_KPC"] <= bmax
+        F = R[f1 & f2 & f3]
+        N_LOS.append(len(F))
+    R[label] = np.array(N_LOS)
+    return R
 
 #-----------------------------------------------------
 def build_continuum_cube(src_path, output_path, mag_sdss_r_max = 26, L_central = 6750, L_central_auto = True):
