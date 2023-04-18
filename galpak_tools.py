@@ -699,8 +699,8 @@ def delete_empty_runs(path, field_list):
 
 # -----------------------------------------------
 
-def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path, dv_abs_match = 0.5e6, export = False,\
-                               export_name = "results.csv"):
+def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path, primary_tab_path, output_path = "", \
+                               media_path = "", dv_abs_match = 0.5e6, export = False, export_name = "results.csv"):
     
     # First we match the galpak results with the DR2:
     dr2 = format_DR2(dr2_path)
@@ -729,10 +729,18 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     dr2 = get_Nxxx_LOS_all(dr2, bmax = 100, dv = dv_abs_match)
     dr2 = get_Nxxx_LOS_all(dr2, bmax = 2000, dv = dv_abs_match)
     
-    # Finally we match with the galpak results:
+    # Then we match with the galpak results:
     R = match_DR2(galpak_res, dr2)
-    # and we compute the alpha parameter:
+    # We compute the alpha parameter:
     R = compute_alpha(R)
+    
+    # We read the primary & score tab:
+    R = read_primary_and_scores(R, primary_tab_path)
+    
+    # We give the adresses of the runs (to make hyperlink easily):
+    R["address_link"] = output_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
+    R["address_perso"] = media_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
+
     
     # and we export the result:
     if export:
