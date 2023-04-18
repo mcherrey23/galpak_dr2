@@ -351,7 +351,6 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
     run galpak for a single source
     line could be OII, OIII, Ha, or cont to run on continuum.
     """
-    print("OPOPOPOPOPOOO")
 
     # First we open the source:
     src = Source.from_file(src_path)
@@ -395,6 +394,17 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
     # we define the model:
     if line  != "cont":
         model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve= rotation_curve, redshift=z_src, thickness_profile = thickness_profile)
+        #pmin = model.Parameters()
+        #pmax = model.Parameters()
+        #pmin.x = 5
+        #pmin.y = 5
+        #pmin.z = 5
+        #pmin.radius = 2
+        #pmax.x = 25
+        #pmax.y = 25
+        #pmax.z = 25
+        #pmax.radius = 20
+        
         cube_nocont_path = src_output_path + src_name + "_"+ line+ "_cube_nocont.fits"
         cube_nocont = Cube(cube_nocont_path)
         cube_to_fit = cube_nocont
@@ -413,6 +423,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         gk = galpak.GalPaK3D(cube_to_fit, model=model, instrument=instru)
         
         gk.run_mcmc(**kwargs)
+        #gk.run_mcmc(min_boundaries = pmin, max_boundaries = pmax, **kwargs)
         
         
 
@@ -430,7 +441,6 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
 
 
 #------------------------------------------------------------------------------------------
-
 
 def run_galpak_all(input_path, output_path, field_list, snr_min = 15, mag_sdss_r_max = 26,\
                    flux_profile = "sersic", rotation_curve = "tanh",autorun = False,\
@@ -693,36 +703,38 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
                                export_name = "results.csv"):
     
     # First we match the galpak results with the DR2:
-    R = match_DR2(galpak_res, dr2_path)
+    dr2 = format_DR2(dr2_path)
     
     # Then we match with the QSOs from field info:
-    R = match_qso(R, fields_info_path)
-    
-    # We compute the alpha parameter:
-    R = compute_alpha(R)
+    dr2 = match_qso(dr2, fields_info_path)
     
     # Then we open the absorptions:
     Abs = pd.read_csv(Abs_path)
     # We compute the Nb of galaxies per Abs:
     
-    Abs = get_Nxxx_abs(Abs, R, bmax = 2000, dv = dv_abs_match)
-    Abs = get_Nxxx_abs(Abs, R, bmax = 100, dv = dv_abs_match)
+    Abs = get_Nxxx_abs(Abs, dr2, bmax = 2000, dv = dv_abs_match)
+    Abs = get_Nxxx_abs(Abs, dr2, bmax = 100, dv = dv_abs_match)
     # and we match the galaxies with the absorbers
-    R = match_absorptions_isolated_galaxies(R, Abs, dv = dv_abs_match)
+    dr2 = match_absorptions_isolated_galaxies(dr2, Abs, dv = dv_abs_match)
     
     # We compute the number of neighbour for each galaxy:
-    R = get_Nxxx_neighb(R, radius = 150, dv = dv_abs_match) 
-    R = get_Nxxx_neighb(R, radius = 100, dv = dv_abs_match)
-    R = get_Nxxx_neighb(R, radius = 50, dv = dv_abs_match)
+    dr2 = get_Nxxx_neighb(dr2, radius = 150, dv = dv_abs_match) 
+    dr2 = get_Nxxx_neighb(dr2, radius = 100, dv = dv_abs_match)
+    dr2 = get_Nxxx_neighb(dr2, radius = 50, dv = dv_abs_match)
     
     # We identify the closest galaxy and it's distance:
-    R = identify_closest_neighbour(R)
+    dr2 = identify_closest_neighbour(dr2)
     
     # We compute the number of neighbour around the LOS:
-    R = get_Nxxx_LOS_all(R, bmax = 100, dv = dv_abs_match)
-    R = get_Nxxx_LOS_all(R, bmax = 2000, dv = dv_abs_match)
+    dr2 = get_Nxxx_LOS_all(dr2, bmax = 100, dv = dv_abs_match)
+    dr2 = get_Nxxx_LOS_all(dr2, bmax = 2000, dv = dv_abs_match)
     
-    # Finally we export the result:
+    # Finally we match with the galpak results:
+    R = match_DR2(galpak_res, dr2)
+    # and we compute the alpha parameter:
+    R = compute_alpha(R)
+    
+    # and we export the result:
     if export:
         R.to_csv(export_name, index = False)
     
@@ -731,9 +743,9 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
 
 # ------------------------------------------
 
-def match_DR2(galpak_res, dr2_path):
+def format_DR2(dr2_path):
     """
-    match the catalog of the galpak runs to the DR2 catalog.
+    Read the DR2 catalog and format it correctly.
     """
     # first we open the DR2 and re format the columns to be consistent with other scripts:
     temp = Table.read(dr2_path, format='fits')
@@ -750,10 +762,16 @@ def match_DR2(galpak_res, dr2_path):
     for f in fields_list:
         idx = df.index[df["field_id"] == f].tolist()
         df.loc[idx, "field_id"] = f[2:12]
-    
-    print("Nb of row in the DR2 catalog: ", len(df))
-    
-    R = pd.merge(df, galpak_res, how="left", on=["field_id", "ID"])
+    return df
+
+#------------------------------------------------------------
+
+def match_DR2(galpak_res, dr2):
+    """
+    match the catalog of the galpak runs to the DR2 catalog.
+    """
+    print("Nb of row in the DR2 catalog: ", len(dr2))
+    R = pd.merge(dr2, galpak_res, how="left", on=["field_id", "ID"])
     return R
 
 #---------------------------------------------------
@@ -1295,4 +1313,34 @@ def build_velocity_map_all(field_list, input_path, output_path, snr_min = 15, co
         #pdf.close()
     
     return 
+
+#-----------------------------------------------------------------
+
+def read_primary_and_scores(R, primary_path):
+    """
+    read a recap tab containing the following columns:
+    ID: the source id
+    primary: a 0/1 flag indicating if the galaxy is primary
+    
+    """
+    
+    primary = pd.read_csv(primary_path)
+    
+    R["primary"] = 0
+    R["galpak_score"] = 0
+    
+    for i, r in primary.iterrows():
+        idx = R.index[R["ID"]== r["ID"]].to_list()[0]
+        R.loc[idx, "primary"] =  r["primary"]
+        R.loc[idx, "galpak_score"] =  r["score"]
+
+    return R
+
+
+
+
+
+
+
+
 
