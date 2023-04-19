@@ -1338,9 +1338,26 @@ def read_primary_and_scores(R, primary_path):
     R["galpak_score"] = 0
     
     for i, r in primary.iterrows():
-        idx = R.index[R["ID"]== r["ID"]].to_list()[0]
+        idx = R.index[R["ID"]== r["ID"]].to_list()
         R.loc[idx, "primary"] =  r["primary"]
         R.loc[idx, "galpak_score"] =  r["score"]
+
+    return R
+
+#------------------------------------------
+def read_runs(R, runs_path):
+    """
+    small script to read from a csv file which run is the one to use for each galaxy.
+    """
+    runs = pd.read_csv(runs_path)
+    
+    R["current"] = 0
+    
+    for i, r in runs.iterrows():
+        f1 = R["ID"]== r["ID"]
+        f2 = R["run_name"]== r["run_name"]
+        idx = R.index[f1 & f2].to_list()
+        R.loc[idx, "current"] =  r["to keep"]
 
     return R
 
