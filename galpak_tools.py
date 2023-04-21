@@ -185,12 +185,14 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
             tt2 = t[t["LINE"] == "OII3729"]
             L_oii_1_obs = tt1["LBDA_REST"][0] * (1 + tt1["Z"][0])
             L_oii_2_obs = tt2["LBDA_REST"][0] * (1 + tt2["Z"][0])
+            L_central_rest = (tt1["LBDA_REST"][0] + tt2["LBDA_REST"][0])/2
             L_central = (L_oii_1_obs + L_oii_2_obs) /2
         else:
             tt = t[t["LINE"] == line]
             f1 = tt["FAMILY"] == "all"
             f2 = tt["FAMILY"] == "balmer"
             tt = tt[f1 | f2]
+            L_central_rest = tt["LBDA_REST"][0]
             L_central = tt["LBDA_REST"][0] * (1 + tt["Z"][0])
             
         # the corresponding pixel is:
@@ -247,9 +249,10 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
             
         fsf = src.get_FSF()
         psf_fwhm = fsf.get_fwhm(L_central)
+        psf_beta = fsf.get_beta(L_central)
         lsf_fwhm = (5.835e-8) * L_central ** 2 - 9.080e-4 * L_central + 5.983  # from Bacon 2017
-        d = np.array([psf_fwhm, lsf_fwhm, line_snr, snr_max])
-        col = ["psf_fwhm", "lsf_fwhm", "snr_from_src", "snr_max"]
+        d = np.array([L_central_rest, L_central, psf_fwhm, psf_beta, lsf_fwhm, line_snr, snr_max])
+        col = ["wave_rest", "wave_obs","psf_fwhm", "psf_beta", "lsf_fwhm", "snr_from_src", "snr_max"]
         df = pd.DataFrame(data = [d], columns = col)
         df.to_csv(src_output_path+"/"+line+"_snr.txt", index = False)
 
@@ -346,10 +349,11 @@ def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, l
 
 #-----------------------------------------------------------------------------
 
-def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh", thickness_profile = "gaussian", autorun = False, save = False, overwrite = True, line = "OII", **kwargs):
+def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh", thickness_profile = "gaussian", autorun = False, save = False, overwrite = True, line = "OII", fsf = None, **kwargs):
     """
     run galpak for a single source
     line could be OII, OIII, Ha, or cont to run on continuum.
+    the fsf could be specified by giving an array like [psf_fwhm, psf_beta, lsf_fwhm]
     """
 
     # First we open the source:
@@ -376,20 +380,32 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
     z_src = src.z["Z"][0]
     print("z = ", z_src)
 
-    # the observed OII wavelengths:
-    L_oii_1_obs = L_oii_1 * (1 + z_src)
-    L_oii_2_obs = L_oii_2 * (1 + z_src)
-
-    # we configure the instrument with the PSF & LSF from the source file:
-    fsf = src.get_FSF()
+    # the observed line wavelengths:
+    #L_oii_1_obs = L_oii_1 * (1 + z_src)
+    #L_oii_2_obs = L_oii_2 * (1 + z_src)
+    
+        # we configure the instrument with the PSF & LSF from the source file:
+    #fsf = src.get_FSF()
+    #instru =  galpak.MUSEWFM()
+    #instru.psf = MoffatPointSpreadFunction( \
+    #    fwhm=fsf.get_fwhm(L_oii_1_obs), \
+    #    beta=fsf.get_beta(L_oii_1_obs))
+    #instru.lsf = GaussianLineSpreadFunction( \
+    #    fwhm=(5.835e-8) * L_oii_1_obs ** 2 - 9.080e-4 * L_oii_1_obs + 5.983)  # from Bacon 2017
+    
+    FSF_info_path = src_output_path + line +"_snr.txt"
+    FSF_info = pd.read_csv(FSF_info_path)
     instru =  galpak.MUSEWFM()
-    instru.psf = MoffatPointSpreadFunction( \
-        fwhm=fsf.get_fwhm(L_oii_1_obs), \
-        beta=fsf.get_beta(L_oii_1_obs))
-    instru.lsf = GaussianLineSpreadFunction( \
-        fwhm=(5.835e-8) * L_oii_1_obs ** 2 - 9.080e-4 * L_oii_1_obs + 5.983)  # from Bacon 2017
-
-
+    if fsf == None:
+        instru.psf = MoffatPointSpreadFunction( \
+            fwhm= FSF_info["psf_fwhm"][0], \
+            beta= FSF_info["psf_beta"][0])
+        instru.lsf = GaussianLineSpreadFunction(fwhm= FSF_info["lsf_fwhm"][0])
+    else:
+        instru.psf = MoffatPointSpreadFunction( \
+            fwhm= fsf[0], \
+            beta= fsf[1])
+        instru.lsf = GaussianLineSpreadFunction(fwhm= fsf[2])
     
     # we define the model:
     if line  != "cont":
@@ -1342,6 +1358,7 @@ def read_primary_and_scores(R, primary_path):
         R.loc[idx, "primary"] =  r["primary"]
         R.loc[idx, "galpak_score"] =  r["score"]
 
+    
     return R
 
 #------------------------------------------
@@ -1350,8 +1367,6 @@ def read_runs(R, runs_path):
     small script to read from a csv file which run is the one to use for each galaxy.
     """
     runs = pd.read_csv(runs_path)
-    
-    R["current"] = 0
     
     for i, r in runs.iterrows():
         f1 = R["ID"]== r["ID"]
