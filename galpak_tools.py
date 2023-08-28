@@ -88,7 +88,7 @@ def get_line_feature(src, line="OII3726", feature="SNR"):
         l = PL_LINES[PL_LINES["LINE"] == line]
         f1 = l["FAMILY"] == "all"
         f2 = l["FAMILY"] == "balmer"
-        l = l[f1 | f2]
+        #l = l[f1 | f2]
         return l[feature][0]
 
     return 0
@@ -149,14 +149,14 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
 
     # we get the SNR:
     if line == "OII":
-        try:
-            oii_3726_snr = get_line_feature(src, line="OII3726", feature="SNR")
-            oii_3729_snr = get_line_feature(src, line="OII3729", feature="SNR")
-            line_snr = max(oii_3726_snr, oii_3729_snr)
-            print("Z = ", z_src, " OII SNR = ", oii_3726_snr, oii_3729_snr)
-        except:
-            line_snr = 0
-            print("Z = ", z_src, " WARNING: no [OII] SNR")
+    #try:
+        oii_3726_snr = get_line_feature(src, line="OII3726", feature="SNR")
+        oii_3729_snr = get_line_feature(src, line="OII3729", feature="SNR")
+        line_snr = max(oii_3726_snr, oii_3729_snr)
+        print("Z = ", z_src, " OII SNR = ", oii_3726_snr, oii_3729_snr)
+    #except:
+     #   line_snr = 0
+     #   print("Z = ", z_src, " WARNING: no [OII] SNR")
     else:
         try:
             line_snr = get_line_feature(src, line= line, feature="SNR")
@@ -346,10 +346,34 @@ def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, l
 
     return
 
+#----------------------------------------------------------------------------
+def substract_continuum_on_ids(ids, input_path, output_path, snr_min = 15, line = "OII"):
+    """
+    extract the continuum around the oii line for all the sources in the input folder
+    """
+    for i, r in ids.iterrows():
+        field = r["field_id"]
+        ID = r["ID"]
+        print(ID)
+        
+        input_path_field = input_path + field + "/" +"products/sources/"
+        src_name = field + "_source-"+str(ID)
+        src_input_path = input_path_field + src_name +".fits"
+        output_path_field = output_path + field + "/"
+        src_output_path = output_path_field + src_name+ "/"
+        os.makedirs(output_path_field, exist_ok=True)
+
+        try:    
+            fig = substract_continuum(src_input_path, output_path, snr_min = snr_min, line = line)
+        except:
+            print(" !!!!!!!!!!!!!!! CONTINUUM SUBSTRACTION FAILED !!!!!!!!!!!!!!!!!!")
+
+    return
+
 
 #-----------------------------------------------------------------------------
 
-def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh", thickness_profile = "gaussian", autorun = False, save = False, overwrite = True, line = "OII", fsf = None, **kwargs):
+def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh", thickness_profile = "gaussian", autorun = False, save = False, overwrite = True, line = "OII", fsf = None, suffix = "", **kwargs):
     """
     run galpak for a single source
     line could be OII, OIII, Ha, or cont to run on continuum.
@@ -362,7 +386,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
 
     src_name = src_path[-28:-5] # the source name in the format "JxxxxXxxxx_source_xxxxx"
     field =  src_path[-28:-18] # the field id in the format JxxxxXxxxx"
-    save_name = "run_"+line
+    save_name = "run_"+line+"_"+suffix
 
 
     output_path_field = output_path + field + "/"
@@ -408,8 +432,13 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         instru.lsf = GaussianLineSpreadFunction(fwhm= fsf[2])
     
     # we define the model:
+    if line == "OII":
+        myline = {'wave': [3726.2, 3728.9]}
+    else: 
+        myline = None
+        
     if line  != "cont":
-        model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve= rotation_curve, redshift=z_src, thickness_profile = thickness_profile)
+        model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve= rotation_curve, redshift=z_src, thickness_profile = thickness_profile, line = myline)
         #pmin = model.Parameters()
         #pmax = model.Parameters()
         #pmin.x = 5
@@ -425,7 +454,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         cube_nocont = Cube(cube_nocont_path)
         cube_to_fit = cube_nocont
     else:
-        model = galpak.ModelSersic2D(flux_profile = flux_profile, redshift=z_src)
+        model = galpak.ModelSersic2D(flux_profile = flux_profile, redshift=z_src, line = myline)
         cube_cont_path_list = glob.glob(src_output_path + src_name + "_cube_cont*.fits")
         cube_cont_path = cube_cont_path_list[0]
         cube_cont = Cube(cube_cont_path)
@@ -543,11 +572,96 @@ def run_galpak_all(input_path, output_path, field_list, snr_min = 15, mag_sdss_r
 
     return
 
+
+#-------------------------------------------------------
+
+def run_galpak_on_ids(input_path, output_path, ids, snr_min = 15, mag_sdss_r_max = 26,\
+                   flux_profile = "sersic", rotation_curve = "tanh",autorun = False,\
+                   save = False, line = "OII", overwrite = True, suffix = "", **kwargs):
+    """
+    run galpak for a list of IDs.
+    The ids must be a table with at least two columns: field_id, and ID
+    """
+    N = len(ids)
+    
+    k = 1
+    for i, r in ids.iterrows():
+        try:
+            print("")
+            print(k, "/", N)
+            field = r["field_id"]
+            ID = r["ID"]
+
+            input_path_field = input_path + field + "/" +"products/sources/"
+            src_name = field + "_source-"+str(ID)
+            src_path = input_path_field + src_name +".fits"
+            output_path_field = output_path + field + "/"
+            src_output_path = output_path_field + src_name+ "/"
+            print(src_name, src_path)
+            print(src_output_path)
+
+            # First we open the source:
+            src = Source.from_file(src_path)
+
+            # we get the SNR:
+            #try:
+            #print(src_output_path+"oii_snr.txt")
+            snr_df = pd.read_csv(src_output_path+line+"_snr.txt", sep = ",", index_col= None)
+            snr_s = snr_df.squeeze()
+            #print(oii_snr_s)
+            snr_from_src = snr_s["snr_from_src"]
+            snr_max = snr_s["snr_max"] 
+            #oii_snr = get_line_feature(src, line="OII3726", feature="SNR")
+            print(line + " SNR from src = ", snr_from_src, "  max = ", snr_max)
+            #except:
+            #    oii_3726_snr_from_src = 0
+            #    oii_snr_max = 0
+            #    print("WARNING: No oii SNR")
+
+            #print("snr_min = ", snr_min)
+            if line != "cont":
+                if snr_from_src >= snr_min:
+                    print("**** RUN GALPAK")
+                    try: 
+                        run_galpak(src_path, output_path, \
+                               flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
+                           save = save, line = line, overwrite = overwrite, suffix = suffix,\
+                               **kwargs)
+                    except:
+                        print(" !!!! RUN FAILED !!!!")
+
+            else:
+                try:
+                    t = src.tables["SPECPHOT_DR2"]
+                    tt = t[t["ID"] == src.header["ID"]]
+                    sdss_r = tt["mag_SDSS_r"][0]
+                except:
+                    sdss_r = 99
+                    print("WARNING: No SDSS mag")
+
+                if sdss_r <= mag_sdss_r_max:
+                    print("**** RUN GALPAK")
+                    try: 
+                        run_galpak(src_path, output_path, \
+                                   flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
+                               save = save, line = line, overwrite = overwrite,\
+                                   **kwargs)
+                    except:
+                        print(" !!!! RUN FAILED !!!!")
+        except:
+            print(" !!!! RUN FAILED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        k+=1
+    return
+
+
+
+
 # -------------------------------------------------------
 
 def extract_result_single_run(run_name, src_output_path):
     gal_param_ext = "galaxy_parameters.dat"
     convergence_ext = "galaxy_parameters_convergence.dat"
+    derived_param_ext = "run_derived_parameters.dat"
     stats_ext = "stats.dat"
     model_ext = "model.txt"
     line_snr_ext = "*_snr.txt"
@@ -567,6 +681,8 @@ def extract_result_single_run(run_name, src_output_path):
             stats_path = run_path + f
         if model_ext in f:
             model_path = run_path + f
+        if derived_param_ext in f:
+            derived_param_path = run_path + f
     if line_name != "cont":
         try:
             line_snr_path = src_output_path + line_name + "_snr.txt"
@@ -588,6 +704,9 @@ def extract_result_single_run(run_name, src_output_path):
     model_df.loc[0].str.strip()
     if line_name != "cont":
         line_snr_df = pd.read_csv(line_snr_path, sep = ",", index_col= None)
+        derived_param_df = pd.read_csv(derived_param_path, sep = "|", index_col= None)
+        derived_param_df.columns = derived_param_df.columns.str.strip()
+    
     
     #--- for the galaxy parameters file ------
     try:
@@ -609,6 +728,21 @@ def extract_result_single_run(run_name, src_output_path):
     
     gal_param_results = pd.DataFrame(data = [gal_param_data], columns = gal_param_all_cols)
     
+    #--- for the derived parameters file ------
+    if line_name != "cont":
+        derived_param_cols = ["v22", "dvdx", "log_Mdyn", "Jtot", "JRF12", "log_Mtot", "BTmass", "rad_kpc", "v2kpc"]
+        derived_param_error_cols = [col + "_err"  for col in derived_param_cols]
+        derived_param = derived_param_df[derived_param_cols]
+
+        derived_param_values = np.array(derived_param.loc[0])
+        derived_param_errors = np.array(derived_param.loc[1])
+
+        derived_param_data = np.array(list(derived_param_values) + list(derived_param_errors))
+        derived_param_all_cols = np.array(derived_param_cols + derived_param_error_cols)
+
+        derived_param_results = pd.DataFrame(data = [derived_param_data], columns = derived_param_all_cols)
+
+    
     #--- for the galaxy parameters convergence file ------
     convergence_cols = gal_param_cols
     convergence = convergence_df[convergence_cols]
@@ -629,7 +763,7 @@ def extract_result_single_run(run_name, src_output_path):
     
     # build the final dataframe:
     if line_name != "cont":
-        DF = pd.concat([gal_param_results, convergence, stats, model, line_snr], axis = 1)
+        DF = pd.concat([gal_param_results, derived_param_results, convergence, stats, model, line_snr], axis = 1)
     else:
         DF = pd.concat([gal_param_results, convergence, stats, model], axis = 1)
     
@@ -640,13 +774,11 @@ def extract_result_single_run(run_name, src_output_path):
     return DF
 
 
-
-
 # -------------------------------------------------------
 
 def extract_results_all(output_path):
     """
-    extract all the results for all the field of the output directory and build a table with a line per source and per run.
+    extract all the results for all the fields of the output directory and build a table with a line per source and per run.
     """
     results_list = []
     field_list = os.listdir(output_path)
@@ -664,6 +796,7 @@ def extract_results_all(output_path):
                         run_output_path = src_output_path + r +"/"
                         if os.path.isdir(run_output_path) and ("run" in r) and (len(os.listdir(run_output_path))!=0):
                             print("    ",r)
+                            #if 1==1:
                             try:
                                 df = extract_result_single_run(r, src_output_path)
                                 df.insert(0, "field_id", [f])
@@ -716,50 +849,84 @@ def delete_empty_runs(path, field_list):
 # -----------------------------------------------
 
 def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path, primary_tab_path, output_path = "", \
-                               media_path = "", dv_abs_match = 0.5e6, export = False, export_name = "results.csv"):
+                               media_path = "", dv_abs_match = 0.5e6, export = False, export_name = "runs.csv", b_sep = 20):
     
     # First we match the galpak results with the DR2:
+    print("match with DR2")
     dr2 = format_DR2(dr2_path)
+    #print(dr2["field_id"].unique())
     
     # Then we match with the QSOs from field info:
+    print("match with QSOs & fields")
     dr2 = match_qso(dr2, fields_info_path)
+    #print(dr2["field_id"].unique())
     
     # Then we open the absorptions:
+    print("match with absorptions")
     Abs = pd.read_csv(Abs_path)
     # We compute the Nb of galaxies per Abs:
-    
     Abs = get_Nxxx_abs(Abs, dr2, bmax = 2000, dv = dv_abs_match)
     Abs = get_Nxxx_abs(Abs, dr2, bmax = 100, dv = dv_abs_match)
     # and we match the galaxies with the absorbers
+    #return dr2
     dr2 = match_absorptions_isolated_galaxies(dr2, Abs, dv = dv_abs_match)
+    #print(dr2["field_id"].unique())
     
     # We compute the number of neighbour for each galaxy:
+    print("computing the neighbours")
+    print("     around each galaxy")
+    #return dr2
     dr2 = get_Nxxx_neighb(dr2, radius = 150, dv = dv_abs_match) 
     dr2 = get_Nxxx_neighb(dr2, radius = 100, dv = dv_abs_match)
     dr2 = get_Nxxx_neighb(dr2, radius = 50, dv = dv_abs_match)
     
     # We identify the closest galaxy and it's distance:
+    print("     Closest")
     dr2 = identify_closest_neighbour(dr2)
     
     # We compute the number of neighbour around the LOS:
+    print("     around LOS")
     dr2 = get_Nxxx_LOS_all(dr2, bmax = 100, dv = dv_abs_match)
     dr2 = get_Nxxx_LOS_all(dr2, bmax = 2000, dv = dv_abs_match)
+    #print(dr2["field_id"].unique())
+    
+    # We also find the primary galaxies automatically:
+    print("primary auto-identification")
+    dr2 = primary_auto(dr2, b_sep = b_sep)
+    #print(dr2["field_id"].unique())
     
     # Then we match with the galpak results:
+    print("match with galpak results")
     R = match_DR2(galpak_res, dr2)
+    print(R["run_name"].unique())
     # We compute the alpha parameter:
+    print("computing the alpha")
     R = compute_alpha(R)
+    print(R["run_name"].unique())
     
     # We read the primary & score tab:
+    print("read primary")
     R = read_primary_and_scores(R, primary_tab_path)
+    print(R["run_name"].unique())
     
     # We give the adresses of the runs (to make hyperlink easily):
     R["address_link"] = output_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
     R["address_perso"] = media_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
 
+    # Finally we compute an automatic score:
+    print("calc score auto")
+    R = calc_score(R)
+    print(R["run_name"].unique())
+    
+    # We also compute the SFR:
+    print("calc SFR")
+    R = calc_SFR(R)
+    print(R["run_name"].unique())
+    
     
     # and we export the result:
     if export:
+        print("exporting...")
         R.to_csv(export_name, index = False)
     
     return R
@@ -783,9 +950,10 @@ def format_DR2(dr2_path):
     df = data[f1 & f2 & f3]
     
     fields_list = df["field_id"].unique()
-    for f in fields_list:
-        idx = df.index[df["field_id"] == f].tolist()
-        df.loc[idx, "field_id"] = f[2:12]
+    #print(fields_list)
+    #for f in fields_list:
+    #    idx = df.index[df["field_id"] == f].tolist()
+    #    df.loc[idx, "field_id"] = f[2:12]
     return df
 
 #------------------------------------------------------------
@@ -795,6 +963,7 @@ def match_DR2(galpak_res, dr2):
     match the catalog of the galpak runs to the DR2 catalog.
     """
     print("Nb of row in the DR2 catalog: ", len(dr2))
+    print("Nb of row in the galpak results: ", len(galpak_res))
     R = pd.merge(dr2, galpak_res, how="left", on=["field_id", "ID"])
     return R
 
@@ -868,6 +1037,10 @@ def match_absorptions_isolated_galaxies(R, Abs, dv = 0.5e6):
     R["z_absorption_dist"] = 0
     R["N100_abs"] = 0
     R["N2000_abs"] = 0
+    
+    cols = R.columns
+    R = R[cols]
+    #print(R)
     for j,i in R.iterrows():
         T = Abs[Abs["field_name"] == i["field_id"]]
         T["v_dist"] = abs(T["z_abs"] - i["Z"])*const.c.value/(1+i["Z"])
@@ -932,8 +1105,10 @@ def get_Nxxx_neighb(R, radius = 100, dv = 1e6):
         #F = R[f1 & f2 & f3]
         F = R[f1 & f2]
         #print(F)
+        F_ra = u.Quantity(F["RA"], unit = "degree")
+        F_dec = u.Quantity(F["DEC"], unit = "degree")
         c1 = SkyCoord(gal["RA"]*u.degree, gal["DEC"]*u.degree)
-        c2 = SkyCoord(F["RA"]*u.degree, F["DEC"]*u.degree)
+        c2 = SkyCoord(F_ra, F_dec)
         sep = c1.separation(c2)
         F["dist"] = Distance(unit=u.kpc, z = gal["Z"]).value/((1+gal["Z"])**2)
         F["neighb_dist"] = sep.radian*F["dist"]
@@ -1361,6 +1536,105 @@ def read_primary_and_scores(R, primary_path):
     
     return R
 
+#---------------------------------------
+def calc_score(df):
+    R = df.copy()
+    score = []
+    
+    for i, r in R.iterrows():
+        conv = r["x_convergence"]*r["y_convergence"]*r["z_convergence"]*r["flux_convergence"]*r["radius_convergence"]*\
+        r["sersic_n_convergence"]*r["inclination_convergence"]*r["pa_convergence"]*r["turnover_radius_convergence"]*\
+        r["maximum_velocity_convergence"]*r["velocity_dispersion_convergence"]
+    
+        if (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["radius"]>1.5) & (conv > 0.95) & (r["N_satellites"] == 0) & \
+        (r["primary_auto"] == 1) & (r["run_name"] != "run_cont"):
+            score.append(3)
+            print(r["ID"], r["N_satellites"])
+        elif (r["ZCONF"] == 2) & (r["snr_eff"]>5) & (r["radius"]>1.5) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1) \
+        & (r["run_name"] != "run_cont"):
+            score.append(2)
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>3) & (r["radius"]>1.5) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1)\
+        & (r["run_name"] != "run_cont"):
+            score.append(2)
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["radius"]>1) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1)\
+        & (r["run_name"] != "run_cont"):
+            score.append(2)
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["radius"]>1.5) & (r["N_satellites"] == 1) & (r["primary_auto"] == 1)\
+        & (r["run_name"] != "run_cont"):
+            score.append(2)
+        #elif (r["ZCONF"] == 3) & (r["run_name"] == "run_cont") & (r["radius"]>1) & (r["N_satellites"] == 0) &\
+        #(r["primary_auto"] == 1):
+        #    score.append(2)
+        elif (r["ZCONF"] >= 1) & (r["snr_eff"]>3) & (r["radius"]>1) & (r["primary_auto"] == 1):
+            score.append(1)
+        elif (r["ZCONF"] >= 1) & (r["run_name"] == "run_cont") & (r["radius"]>1) & (r["primary_auto"] == 1):
+            score.append(1)
+        else:
+            score.append(0)
+        
+    SCORE = np.array(score)
+    R["score_auto"] = SCORE
+    return R
+
+#-----------------------------------------
+
+def primary_auto(df, b_sep = 30, dv = 0.5e6):
+    R = df.copy()
+    
+    prim = []
+    Nsat = []
+    
+    for i, r in R.iterrows():
+        p = 0
+        N_satellites = -1
+        # a galaxy can be primary only if within 100kpc
+        if (r["B_KPC"] < 100) and (r["is_QSO"] == 0) and (r["is_star"] == 0) and (r["Z"]< 1.5):
+            # we then compute the number of neighbours within B + b_sep kpc:
+            f1 = np.abs(R["Z"] - r["Z"])*const.c.value/(1+r["Z"])<dv
+            f2 = R["field_id"] == r["field_id"]
+            f3 = R["B_KPC"] <= r["B_KPC"] + b_sep
+            f4 = R["sed_logMass"] > 8
+            f5 = R["ID"] != r["ID"]
+            Fall = R[f1 & f2 & f3] # with satellites
+            F = R[f1 & f2 & f3 & f4] # without satellites
+            F_satellites = R[f1 & f2 & f3 & ~f4 & f5] #Nb of satellites (excluding the galaxy itself
+            N_neighb = len(F)
+            N_satellites = len(F_satellites)
+            is_closest = r["B_KPC"] == np.min(F["B_KPC"])
+            # We don't consider galaxies in groups as primary:
+            if r["N2000_LOS"] <= 4:
+                # to be primary, the galaxy must alone.. 
+                if len(Fall) == 1:
+                    p = 1
+                # .. or the closest one (not taking into account satellites)
+                elif is_closest:
+                    # to be primary, the 2nd closest galaxy of the LOS must be at least B+b_sep further:
+                    if N_neighb == 1:
+                        p = 1
+        prim.append(p)
+        Nsat.append(N_satellites)
+    PRIM = np.array(prim)
+    NSAT = np.array(Nsat)
+    R["primary_auto"] = PRIM
+    R["N_satellites"] = NSAT
+    return R
+
+#------------------------------------------
+def get_best_run(runs):
+    
+    ids = runs["ID"].unique()
+    r_list = []
+    
+    for i in ids:
+        rr = runs[runs["ID"] == i]
+        rr["is_not_cont_run"] = rr["run_name"] != "run_cont" 
+        rr["minus_chi2_at_p"] = -rr["chi2_at_p"]
+        rr.sort_values(by = ["score_auto", "is_not_cont_run", "minus_chi2_at_p"], \
+                       inplace = True, ignore_index = True, ascending = False)
+        r_list.append(rr[:1])
+    
+    R = pd.concat(r_list)
+    return R
 #------------------------------------------
 def read_runs(R, runs_path):
     """
@@ -1377,10 +1651,126 @@ def read_runs(R, runs_path):
     return R
 
 
+#---------------------------------
+
+def calc_SFR(R):
+    """
+    Compute the SFR from the [OII] flux using the Gilbank formula. The SFR detection limit is also estimated.
+    to compute the SFR ,the following columns are needed:
+    - Z: the redshift
+    - OII3726_FLUX
+    - OII3729_FLUX
+    - sed_logMass
+    
+    """
+    
+    R2 = R.copy()
+    R2["dist_ang"] = Distance(unit=u.m, z = R2["Z"]).value/((1+R2["Z"])**2)
+    R2["dist_lum"] = Distance(unit=u.m, z = R2["Z"]).value
+    
+    R2["OII_flux"] = R2["OII3726_FLUX"] + R2["OII3729_FLUX"]
+    R2["OII_flux_lim"] = 300
+    R2["OII_lum"] = 4*np.pi*R2["OII_flux"]*1e-20*((R2["dist_lum"]*1e2)**2) # the 1e2 is to have cm2 like in the flux.
+    R2["OII_lum_lim"] = 4*np.pi*300*1e-20*((R2["dist_lum"]*1e2)**2) # the 1e2 is to have cm2 like in the flux.
+    #R["sed_logMass_lim"] = 6 # set a value according to the sed fitting lim
+    
+    idx = R2.index[R2["OII_flux"].isna()].to_list()
+    R2.loc[idx, "OII_flux"] = 0
+    R2["SFR_gilbank"] = SFR_Gilbank(R2["sed_logMass"], R2["OII_lum"])
+    
+    # Then we add a column that indicate the SFR detection limit 
+    SFR_lim = []
+    
+    for i, r in R2.iterrows():
+        if np.isnan(r["sed_logMass"]):
+            SFR_lim.append(SFR_Gilbank(6, r["OII_lum_lim"]))
+        else:
+            SFR_lim.append(SFR_Gilbank(r["sed_logMass"], r["OII_lum_lim"]))
+
+    R2["SFR_gilbank_lim"] = np.array(SFR_lim)
+    
+    return R2
+
+#------------------------------------
+def SFR_Gilbank(logMstar, LOII):
+    a = -1.424
+    b = 9.827
+    c = 0.572
+    d = 1.7
+    lnorm = 3.8e40
+    SFR = LOII/lnorm/(a*np.tanh((logMstar-b)/c)+d)
+    return SFR
 
 
+#---------------------------
 
+def plot_extended_emi(field_z_lst, line = 2796, dv = 500,  Nper_row = 4, sigma = 1, vmin = 0, vmax = 20):
+    Nrows = int(np.ceil(len(field_z_lst)/Nper_row))+1
+    print("dv = ", dv)
+    
+    plt.figure(figsize = (4*Nper_row, 4*Nrows), dpi = 300)
+    
+    i = 1
+    for _, f in field_z_lst.iterrows():
+    #try:
+        if 1 == 1:
+            cube_name = f["field_id"] + "_dr2_zap.fits"
+            cube_path = "/muse/MG2QSO/private/production_dr2/"+ f["field_id"] +"/"+ cube_name
+            #print(cube_path)
+            cube = Cube(cube_path)
+            
+            z_sys = f["Z"]
+            #dv = 200 #km/s
+            dz = dv*1e3*(1+z_sys)/const.c.value
+            line_obs = line*(1 + z_sys)
+            line_min_obs = line*(1 + z_sys - dz)
+            line_max_obs = line*(1 + z_sys + dz)
+            print(z_sys, " ", line_min_obs, " ", line_max_obs)
+            
+            min_line = int(np.floor(cube.wave.pixel(line_min_obs))-1)
+            max_line = int(np.floor(cube.wave.pixel(line_max_obs))+1)
 
+            left_min = int(np.floor(cube.wave.pixel(line_min_obs)) -100)
+            left_max = int(np.floor(cube.wave.pixel(line_min_obs)) -50)
 
+            right_min = int(np.floor(cube.wave.pixel(line_max_obs)) + 50)
+            right_max = int(np.floor(cube.wave.pixel(line_max_obs)) - 100)
+            
+            #print(i+1, " ; ", g["field_id"], ":  min oii = ", min_oii, ", max oii = ", max_oii, ", diff = ", max_oii-min_oii)
 
+            cube_left = cube[left_min: left_max, : , :]
+            cube_right = cube[left_min: left_max, : , :]
+
+            cont_left = cube_left.mean(axis=0)
+            cont_right = cube_right.mean(axis=0)
+            cont_mean = 0.5*(cont_left + cont_right)
+
+            print("min line = ", min_line, "  max line = ", max_line)
+            #cube_ttt = cube[-1000: -500, :, :]
+            cube_line = cube[min_line: max_line, : , :] 
+            print("cube shape = ", cube_line.shape)
+            if (min_line < 0):
+                print("CUBE FAILS!")
+                ima_line = 0
+            else:
+                ima_line = cube_line.mean(axis=0) - cont_mean
+            
+            #print(i, Nrows, Nper_row)
+
+            plt.subplot(Nrows,Nper_row,i)
+            title = f["field_id"]+ ", z = "+str(round(z_sys,2))
+            plt.title(title)
+            #ima_oii. = gaussian_filter(ima_oii.data.data, sigma = 1)
+            try:
+                ima_line.gaussian_filter(sigma = sigma, inplace = True)
+                ima_line.plot(scale='log', colorbar='none', vmin = vmin, vmax = vmax)
+            except:
+                pass
+            #ima_smooth = gaussian_filter(ima_oii_data, sigma = 1)
+            #plt.imshow(ima_smooth, vmin = 0, vmax = 20, cmap=viridis, norm=colors.LogNorm())
+
+            plt.gca().set_aspect('equal', adjustable='box')
+            plt.tight_layout()
+            i+=1
+    #return cube
 
