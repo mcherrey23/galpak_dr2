@@ -212,11 +212,16 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         cube_right = cube[max_pix: right_max, :, :]
         cube_central = cube[min_pix: max_pix, :, :]
         cube_central_nb = cube[nb_min_pix: nb_max_pix, :, :]
-
+        
         # the continuum estimation:
         cont_left = cube_left.mean(axis=0)
         cont_right = cube_right.mean(axis=0)
-        cont_mean = 0.5 * (cont_left + cont_right)
+        if (cube.wave.pixel(L_central) - 150 > 0) & (cube.wave.pixel(L_central) + 150 < cube.shape[0]):
+            cont_mean = 0.5 * (cont_left + cont_right)
+        elif (cube.wave.pixel(L_central) - 150 > 0):
+            cont_mean = cont_left
+        elif (cube.wave.pixel(L_central) + 150 < cube.shape[0]):
+            cont_mean = cont_right
 
         # continuum substraction:
         cube_central_nocont = cube_central - cont_mean
@@ -237,12 +242,22 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         try:
             noise_left = (cube_left.data).std(axis = 0)
             noise_right = (cube_right.data).std(axis = 0)
-            avg_noise = 0.5*(noise_left + noise_right) # the map of noise per pixel
+            #cont_mean = 0.5 * (cont_left + cont_right)
+            if (cube.wave.pixel(L_central) - 150 > 0) & (cube.wave.pixel(L_central) + 150 < cube.shape[0]):
+                avg_noise = 0.5*(noise_left + noise_right) # the map of noise per pixel
+            elif (cube.wave.pixel(L_central) - 150 > 0):
+                avg_noise = noise_left
+            elif (cube.wave.pixel(L_central) + 150 < cube.shape[0]):
+                avg_noise = noise_right
             signal = (cube_central_nocont.data).max(axis = 0)
             snr = signal/avg_noise # this is a map of SNR per pixel.
             snr_source = snr*mask_obj
             snr_max = snr_source.max() #the maximum snr among pixels
             # we save the SNR values in a text file that we will be able to read later:
+            #print("L central: ", L_central)
+            #print("noise_left: ", noise_left)
+            #print("noise_right: ", noise_right)
+            print("snr_max = ", snr_max)
         except:
             print("SNR max calc failed !")
             snr_max = 0
@@ -849,7 +864,8 @@ def delete_empty_runs(path, field_list):
 # -----------------------------------------------
 
 def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path, primary_tab_path, output_path = "", \
-                               media_path = "", dv_abs_match = 0.5e6, export = False, export_name = "runs.csv", b_sep = 20):
+                               media_path = "", dv_abs_match = 0.5e6, export = False, export_name = "runs.csv", b_sep = 20,\
+                               b_max = 100, dv_primary = 0.5e6, log_max_mass_satellite = 8, group_threshold = 4):
     
     # First we match the galpak results with the DR2:
     print("match with DR2")
@@ -892,22 +908,20 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     
     # We also find the primary galaxies automatically:
     print("primary auto-identification")
-    dr2 = primary_auto(dr2, b_sep = b_sep)
+    dr2 = primary_auto(dr2, b_sep = b_sep, b_max = b_max, dv = dv_primary, \
+                       log_max_mass_satellite = log_max_mass_satellite, group_threshold = group_threshold)
     #print(dr2["field_id"].unique())
     
     # Then we match with the galpak results:
     print("match with galpak results")
     R = match_DR2(galpak_res, dr2)
-    print(R["run_name"].unique())
     # We compute the alpha parameter:
     print("computing the alpha")
     R = compute_alpha(R)
-    print(R["run_name"].unique())
     
     # We read the primary & score tab:
     print("read primary")
     R = read_primary_and_scores(R, primary_tab_path)
-    print(R["run_name"].unique())
     
     # We give the adresses of the runs (to make hyperlink easily):
     R["address_link"] = output_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
@@ -916,12 +930,10 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     # Finally we compute an automatic score:
     print("calc score auto")
     R = calc_score(R)
-    print(R["run_name"].unique())
     
     # We also compute the SFR:
     print("calc SFR")
     R = calc_SFR(R)
-    print(R["run_name"].unique())
     
     
     # and we export the result:
@@ -1037,6 +1049,7 @@ def match_absorptions_isolated_galaxies(R, Abs, dv = 0.5e6):
     R["z_absorption_dist"] = 0
     R["N100_abs"] = 0
     R["N2000_abs"] = 0
+    R["abs_id"] = -1
     
     cols = R.columns
     R = R[cols]
@@ -1050,6 +1063,7 @@ def match_absorptions_isolated_galaxies(R, Abs, dv = 0.5e6):
         R.loc[idx, "REW_2796" ] = abs_min["REW_2796"].mean()
         R.loc[idx, "N100_abs"] = abs_min["N100_abs"].mean()
         R.loc[idx, "N2000_abs"] = abs_min["N2000_abs"].mean()
+        R.loc[idx, "abs_id"] = abs_min["abs_id"].mean()
         try:
             R.loc[idx, "sig_REW_2796"] = abs_min["sig_REW_2796"].mean()
         except:
@@ -1543,31 +1557,29 @@ def calc_score(df):
     
     for i, r in R.iterrows():
         conv = r["x_convergence"]*r["y_convergence"]*r["z_convergence"]*r["flux_convergence"]*r["radius_convergence"]*\
-        r["sersic_n_convergence"]*r["inclination_convergence"]*r["pa_convergence"]*r["turnover_radius_convergence"]*\
-        r["maximum_velocity_convergence"]*r["velocity_dispersion_convergence"]
+        r["sersic_n_convergence"]*r["inclination_convergence"]*r["pa_convergence"]
     
-        if (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["radius"]>1.5) & (conv > 0.95) & (r["N_satellites"] == 0) & \
+        if (r["ZCONF"] == 3) & (r["snr_eff"]>5)  & (conv > 0.95) & (r["N_satellites"] == 0) & \
         (r["primary_auto"] == 1) & (r["run_name"] != "run_cont"):
             score.append(3)
-            print(r["ID"], r["N_satellites"])
-        elif (r["ZCONF"] == 2) & (r["snr_eff"]>5) & (r["radius"]>1.5) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1) \
-        & (r["run_name"] != "run_cont"):
+        elif (r["ZCONF"] == 2) & (r["snr_eff"]>5) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1) \
+        & (r["run_name"] != "run_cont") & (conv > 0.95):
             score.append(2)
-        elif (r["ZCONF"] == 3) & (r["snr_eff"]>3) & (r["radius"]>1.5) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1)\
-        & (r["run_name"] != "run_cont"):
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>3) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1)\
+        & (r["run_name"] != "run_cont") & (conv > 0.95):
             score.append(2)
-        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["radius"]>1) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1)\
-        & (r["run_name"] != "run_cont"):
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1)\
+        & (r["run_name"] != "run_cont") & (conv > 0.95):
             score.append(2)
-        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["radius"]>1.5) & (r["N_satellites"] == 1) & (r["primary_auto"] == 1)\
-        & (r["run_name"] != "run_cont"):
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["N_satellites"] == 1) & (r["primary_auto"] == 1)\
+        & (r["run_name"] != "run_cont") & (conv > 0.95):
             score.append(2)
         #elif (r["ZCONF"] == 3) & (r["run_name"] == "run_cont") & (r["radius"]>1) & (r["N_satellites"] == 0) &\
         #(r["primary_auto"] == 1):
         #    score.append(2)
-        elif (r["ZCONF"] >= 1) & (r["snr_eff"]>3) & (r["radius"]>1) & (r["primary_auto"] == 1):
+        elif (r["ZCONF"] >= 1) & (r["snr_eff"]>3)  & (r["primary_auto"] == 1) & (conv > 0.8):
             score.append(1)
-        elif (r["ZCONF"] >= 1) & (r["run_name"] == "run_cont") & (r["radius"]>1) & (r["primary_auto"] == 1):
+        elif (r["ZCONF"] >= 1) & (r["run_name"] == "run_cont") & (r["primary_auto"] == 1) & (conv > 0.8):
             score.append(1)
         else:
             score.append(0)
@@ -1578,7 +1590,8 @@ def calc_score(df):
 
 #-----------------------------------------
 
-def primary_auto(df, b_sep = 30, dv = 0.5e6):
+def primary_auto(df, b_max = 100, b_sep = 30, dv = 0.5e6, log_max_mass_satellite = 8, group_threshold = 4):
+    
     R = df.copy()
     
     prim = []
@@ -1588,21 +1601,23 @@ def primary_auto(df, b_sep = 30, dv = 0.5e6):
         p = 0
         N_satellites = -1
         # a galaxy can be primary only if within 100kpc
-        if (r["B_KPC"] < 100) and (r["is_QSO"] == 0) and (r["is_star"] == 0) and (r["Z"]< 1.5):
+        if (r["B_KPC"] < b_max) and (r["is_QSO"] == 0) and (r["is_star"] == 0) and (r["Z"]< 1.5):
             # we then compute the number of neighbours within B + b_sep kpc:
             f1 = np.abs(R["Z"] - r["Z"])*const.c.value/(1+r["Z"])<dv
             f2 = R["field_id"] == r["field_id"]
             f3 = R["B_KPC"] <= r["B_KPC"] + b_sep
-            f4 = R["sed_logMass"] > 8
+            f4 = R["sed_logMass"] > log_max_mass_satellite
             f5 = R["ID"] != r["ID"]
+            f6 = R["sed_logMass"].isna()
             Fall = R[f1 & f2 & f3] # with satellites
-            F = R[f1 & f2 & f3 & f4] # without satellites
+            F = R[f1 & f2 & f3 & (f4 | f6)] # without satellites
             F_satellites = R[f1 & f2 & f3 & ~f4 & f5] #Nb of satellites (excluding the galaxy itself
             N_neighb = len(F)
             N_satellites = len(F_satellites)
             is_closest = r["B_KPC"] == np.min(F["B_KPC"])
+            #print(r["ID"], len(Fall), is_closest, N_neighb)
             # We don't consider galaxies in groups as primary:
-            if r["N2000_LOS"] <= 4:
+            if r["N2000_LOS"] <= group_threshold:
                 # to be primary, the galaxy must alone.. 
                 if len(Fall) == 1:
                     p = 1
@@ -1627,9 +1642,10 @@ def get_best_run(runs):
     
     for i in ids:
         rr = runs[runs["ID"] == i]
+        rr["run_convergence_global"] = rr["x_convergence"]*rr["y_convergence"]*rr["z_convergence"]*rr["inclination_convergence"]*rr["radius_convergence"]*rr["flux_convergence"]*rr["pa_convergence"]
         rr["is_not_cont_run"] = rr["run_name"] != "run_cont" 
         rr["minus_chi2_at_p"] = -rr["chi2_at_p"]
-        rr.sort_values(by = ["score_auto", "is_not_cont_run", "minus_chi2_at_p"], \
+        rr.sort_values(by = ["score_auto", "is_not_cont_run", "run_convergence_global", "minus_chi2_at_p"], \
                        inplace = True, ignore_index = True, ascending = False)
         r_list.append(rr[:1])
     
@@ -1773,4 +1789,115 @@ def plot_extended_emi(field_z_lst, line = 2796, dv = 500,  Nper_row = 4, sigma =
             plt.tight_layout()
             i+=1
     #return cube
+    
+    
+#------------------------------------------------------------------
+
+def build_primary_catalog(R, output_dir, file_name = "primary_catalog"):
+    """
+    Make a pdf file that is a very synthetic view of the primary galaxies, and their best associated galpak runs
+    """
+    # First we select the primaries:
+    f30 = R["primary"] == 1
+    f31 = R["primary_auto"] == 1
+    rr = R[f30 | f31]
+
+    # Then we build the pdf:
+    k = 0
+    pdf_name = output_dir+file_name + ".pdf"
+    pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_name)
+    for i, r in rr.iterrows():
+        #print(r[["run_name"]])
+        field_id = r["field_id"]
+        src_id = r["ID"] 
+        run_name = r["run_name"]
+        z_src = r["Z"]
+        REW2796 =r["REW_2796"]
+        B_KPC = r["B_KPC"]
+        incl = r["inclination"]
+        alpha = r["alpha"]
+        radius = r["radius"]
+        snr_eff = r["snr_eff"]
+        score = r["galpak_score"]
+        score_auto = r["score_auto"]
+        primary = r["primary"]
+        primary_auto = r["primary_auto"]
+        N_satellites = r["N_satellites"]
+        logMass = r["sed_logMass"]
+
+        #print(output_dir, run_name, src_id, field_id)
+
+
+        title = field_id+" - " +str(src_id)+" - z = "+str(np.round(z_src, 3)) +" - B = "+str(B_KPC)+\
+            " - REW2796 = "+str(REW2796)+" - log(M) = "+str(np.round(logMass,2)) + " - SNReff = " +str(np.round(snr_eff,1))+\
+            " - incl = "+ str(np.round(incl,1))+" - alpha = "+str(np.round(alpha,1)) +"\n "+\
+            "run = " + str(run_name) + " primary /prima.auto = "+str(primary)+"/"+str(primary_auto)+" score/score_auto = "+\
+            str(score)+"/"+str(score_auto)+" Nsat = " + str(N_satellites)
+
+        fig = plt.figure(figsize = (18,5))
+        fig.suptitle(title)
+
+        #print(type(run_name))
+        if type(run_name) is str:
+            run_path = output_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+str(run_name)+"/"
+            print(run_path)
+
+            # For the measured flux:
+            img_run = plt.imread(run_path + "run_images.png")
+            img_measured = img_run[10:320, 140:440]
+
+            # For th model:
+            img_model_conv = plt.imread(run_path + "run_obs_maps.png")
+            img_model_conv = img_model_conv[50:320, 430:730]
+
+            plt.subplot(131)
+            plt.imshow(img_measured)
+            plt.axis("off")
+
+            plt.subplot(132)
+            plt.imshow(img_model_conv)
+            plt.axis("off")
+
+            # For the velmap:
+            #if 1 == 1:
+            try:
+                vel = "camel/camel_"+ str(src_id) +"_"+"o2" +"_vel_common.fits"
+                snr = "camel/camel_"+ str(src_id) +"_"+"o2" +"_snr_common.fits"
+                velmap_path = output_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+vel
+                snr_path = output_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+snr
+                hdul_vel = fits.open(velmap_path)
+                hdul_snr = fits.open(snr_path)
+                img_vel = hdul_vel[0].data
+                img_snr = hdul_snr[0].data
+                m = np.where(img_snr>4, 1, 0)
+
+                kpc_per_arcsec = cosmo.kpc_proper_per_arcmin(z_src).value/60
+                extent_arcsec = np.array([-0.2*15, 0.2*15,-0.2*15, 0.2*15])
+                extent_kpc = extent_arcsec*kpc_per_arcsec
+
+                plt.subplot(133)
+                #plt.title("velocity map (snr>4 mask)")
+                plt.imshow(img_vel*m, vmin = -150, vmax = 150, cmap = "bwr", extent = extent_kpc)
+                cbar = plt.colorbar(label = "Dv [km/s]")
+                plt.xlabel("x [kpc]", size = 12)
+                plt.ylabel("y [kpc]", size = 12)
+                plt.gca().invert_yaxis()
+                #fig.savefig(pdf, format='pdf')
+            except:
+                print(src_id, ": no vel. map")
+                plt.subplot(133)
+                plt.scatter(0,0, c = "white")
+
+        else:
+            print(src_id ,": no run" , run_name, type(run_name))
+            plt.subplot(131)
+            plt.scatter(0,0, c = "white")
+            plt.axis("off")
+
+        fig.savefig(pdf, format='pdf')
+
+        #print(run_img)
+        #plt.figure()
+        #plt.imshow(img_model_conv)
+    pdf.close()
 
