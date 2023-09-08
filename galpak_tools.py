@@ -887,6 +887,9 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     #return dr2
     dr2 = match_absorptions_isolated_galaxies(dr2, Abs, dv = dv_abs_match)
     #print(dr2["field_id"].unique())
+    dr2["detection_limit_p90"] = 0.125
+    dr2["detection_limit_p75"] = 0.075
+    dr2["detection_limit_median"] = 0.05
     
     # We compute the number of neighbour for each galaxy:
     print("computing the neighbours")
@@ -934,6 +937,14 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     # We also compute the SFR:
     print("calc SFR")
     R = calc_SFR(R)
+    
+    # And the virial radius, virial mass from Vmax:
+    print("calc virial mass, radius and halo parameters")
+    print(R["log_Mdyn"].dtype)
+    #R["Rdyn"] = get_Rvir(10**R["log_Mdyn"], R["Z"])
+    R["Rvir"] = get_Rvir_from_Vvir(R["maximum_velocity"], R["Z"])
+    R["Mvir"] = get_Mvir_from_Vvir(R["maximum_velocity"], R["Z"])
+    R["rho0"], R["rs"] = get_nfw_param(R["Mvir"], R["Z"])
     
     
     # and we export the result:
@@ -1681,8 +1692,8 @@ def calc_SFR(R):
     """
     
     R2 = R.copy()
-    R2["dist_ang"] = Distance(unit=u.m, z = R2["Z"]).value/((1+R2["Z"])**2)
-    R2["dist_lum"] = Distance(unit=u.m, z = R2["Z"]).value
+    R2["dist_ang"] = Distance(unit=u.m, z = np.array(R2["Z"])).value/((1+np.array(R2["Z"]))**2)
+    R2["dist_lum"] = Distance(unit=u.m, z = np.array(R2["Z"])).value
     
     R2["OII_flux"] = R2["OII3726_FLUX"] + R2["OII3729_FLUX"]
     R2["OII_flux_lim"] = 300
@@ -1793,14 +1804,14 @@ def plot_extended_emi(field_z_lst, line = 2796, dv = 500,  Nper_row = 4, sigma =
     
 #------------------------------------------------------------------
 
-def build_primary_catalog(R, output_dir, file_name = "primary_catalog"):
+def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
     """
-    Make a pdf file that is a very synthetic view of the primary galaxies, and their best associated galpak runs
+    Make a pdf file that is a very synthetic view of the galaxies in input, and their best associated galpak runs
     """
     # First we select the primaries:
-    f30 = R["primary"] == 1
-    f31 = R["primary_auto"] == 1
-    rr = R[f30 | f31]
+    #f30 = R["primary"] == 1
+    #f31 = R["primary_auto"] == 1
+    #rr = R[f30 | f31]
 
     # Then we build the pdf:
     k = 0
@@ -1830,7 +1841,7 @@ def build_primary_catalog(R, output_dir, file_name = "primary_catalog"):
 
         title = field_id+" - " +str(src_id)+" - z = "+str(np.round(z_src, 3)) +" - B = "+str(B_KPC)+\
             " - REW2796 = "+str(REW2796)+" - log(M) = "+str(np.round(logMass,2)) + " - SNReff = " +str(np.round(snr_eff,1))+\
-            " - incl = "+ str(np.round(incl,1))+" - alpha = "+str(np.round(alpha,1)) +"\n "+\
+            " - incl = "+ str(np.round(incl,1))+" - alpha = "+str(np.round(alpha,1)) + " radius = " + str(np.round(radius,2))+  "\n "+\
             "run = " + str(run_name) + " primary /prima.auto = "+str(primary)+"/"+str(primary_auto)+" score/score_auto = "+\
             str(score)+"/"+str(score_auto)+" Nsat = " + str(N_satellites)
 
@@ -1839,7 +1850,7 @@ def build_primary_catalog(R, output_dir, file_name = "primary_catalog"):
 
         #print(type(run_name))
         if type(run_name) is str:
-            run_path = output_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+str(run_name)+"/"
+            run_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+str(run_name)+"/"
             print(run_path)
 
             # For the measured flux:
@@ -1863,8 +1874,8 @@ def build_primary_catalog(R, output_dir, file_name = "primary_catalog"):
             try:
                 vel = "camel/camel_"+ str(src_id) +"_"+"o2" +"_vel_common.fits"
                 snr = "camel/camel_"+ str(src_id) +"_"+"o2" +"_snr_common.fits"
-                velmap_path = output_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+vel
-                snr_path = output_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+snr
+                velmap_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+vel
+                snr_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+snr
                 hdul_vel = fits.open(velmap_path)
                 hdul_snr = fits.open(snr_path)
                 img_vel = hdul_vel[0].data
@@ -1900,4 +1911,95 @@ def build_primary_catalog(R, output_dir, file_name = "primary_catalog"):
         #plt.figure()
         #plt.imshow(img_model_conv)
     pdf.close()
+    
+    
+#-------------------------------------------- 
+def get_Rvir(Mvir, z):
+    """
+    return the virial radius for a NFW located at redshift z and having a given virial mass.
+    ref: https://arxiv.org/pdf/astro-ph/9710107.pdf
+    """
+    x = cosmo.Om(z)-1
+    deltac = 18*np.pi**2 + 82*x - 39*x**2
+
+    Hz = cosmo.H(z) # The hubble parameter at z
+    rhoc = cosmo.critical_density(z)
+    k = 1*u.g/(u.cm**3)
+    kk = k.to(u.Msun/u.kpc**3).value
+    rhoc = rhoc* kk
+    Rvir = (3*Mvir/(4*np.pi*deltac*rhoc))**(1/3) # the virial radius
+    return Rvir
+
+# ----------------------------------------------------
+
+def get_Rvir_from_Vvir(Vvir, z):
+    """
+    return the virial radius from the virial speed.
+    Vvir must be given in km/s
+    Rvir is returned in kpc
+    ref: https://arxiv.org/pdf/astro-ph/9710107.pdf
+    """
+    x = cosmo.Om(z)-1
+    deltac = 18*np.pi**2 + 82*x - 39*x**2
+    rhoc = cosmo.critical_density(z)
+    k = 1*u.g/(u.cm**3)
+    kk = k.to(u.Msun/u.kpc**3).value
+    rhoc = rhoc* kk
+    G = const.G.to(u.kpc**3/u.Msun/(u.s**2)).value
+    
+    Rvir = Vvir*(1*u.km/u.s).to(u.kpc/u.s).value/((4*G*rhoc*deltac)**0.5)
+    
+    return Rvir
+
+#------------------------------------------------------
+
+def get_Mvir_from_Vvir(Vvir, z):
+    """
+    return the virial radius from the virial speed.
+    Vvir must be given in km/s
+    Rvir is returned in kpc
+    ref: https://arxiv.org/pdf/astro-ph/9710107.pdf
+    """
+    x = cosmo.Om(z)-1
+    deltac = 18*np.pi**2 + 82*x - 39*x**2
+    rhoc = cosmo.critical_density(z)
+    k = 1*u.g/(u.cm**3)
+    kk = k.to(u.Msun/u.kpc**3).value
+    rhoc = rhoc* kk
+    G = const.G.to(u.kpc**3/u.Msun/(u.s**2)).value
+    
+    Rvir = get_Rvir_from_Vvir(Vvir, z)
+    
+    Mvir = 4/3*np.pi*deltac*rhoc*Rvir**3
+    
+    return Mvir
+
+# ------------------------------------------------------
+
+def get_nfw_param(Mvir, z):
+    """
+    From the Virial Mass and the redshift, this function get the NFW profile parameters rhoO and Rs.
+    For that it uses the c - M relation described in Correa et al. 2018
+    """
+    
+    Rvir = get_Rvir(Mvir, z)
+    c = Correa(Mvir, z)
+    Rs = Rvir/c
+    rho0 = Mvir/(4*np.pi*(Rs**3)*(np.log(1 + c) - c/(1 + c)))
+    return rho0, Rs
+
+
+def Correa(Mvir, z):
+    """
+    compute the concentration of a NFW profile according to Correa et al. 2015
+    """
+    a = 1.62774 - 0.2458*(1 + z) + 0.01716*(1 + z)**2
+    b = 1.66079 + 0.00359*(1 + z) - 1.6901*(1 + z)**0.00417
+    g = -0.02049 + 0.0253*(1 + z)**(-0.1044)
+    log10_c = a + b*np.log10(Mvir)*(1 + g*(np.log10(Mvir))**2)
+    
+    return 10**log10_c
+
+
+
 
