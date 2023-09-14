@@ -388,7 +388,10 @@ def substract_continuum_on_ids(ids, input_path, output_path, snr_min = 15, line 
 
 #-----------------------------------------------------------------------------
 
-def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh", thickness_profile = "gaussian", autorun = False, save = False, overwrite = True, line = "OII", fsf = None, suffix = "", **kwargs):
+def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = "tanh", thickness_profile = "gaussian", \
+               autorun = False, save = False, overwrite = True, line = "OII", fsf = None, suffix = "", decomp = False,\
+               rotation_curve_DM = "DC14", rotation_curve_disk = "MGE",rotation_curve_gas= "sgas", \
+               rotation_curve_bulge= "none", adrift = "Dalcanton", dispersion_profile = "thick", **kwargs):
     """
     run galpak for a single source
     line could be OII, OIII, Ha, or cont to run on continuum.
@@ -452,8 +455,11 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
     else: 
         myline = None
         
-    if line  != "cont":
+    if (line  != "cont") & (decomp == False):
         model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve= rotation_curve, redshift=z_src, thickness_profile = thickness_profile, line = myline)
+        cube_nocont_path = src_output_path + src_name + "_"+ line+ "_cube_nocont.fits"
+        cube_nocont = Cube(cube_nocont_path)
+        cube_to_fit = cube_nocont
         #pmin = model.Parameters()
         #pmax = model.Parameters()
         #pmin.x = 5
@@ -465,6 +471,13 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         #pmax.z = 25
         #pmax.radius = 20
         
+    elif (line  != "cont") & (decomp == True):
+        print("/!\ Decomposition model")
+        model = galpak.ModelDecomp(flux_profile = flux_profile, redshift=z_src,\
+                          thickness_profile = thickness_profile, line = myline, rotation_curve_DM = rotation_curve_DM,\
+                          rotation_curve_disk = rotation_curve_disk, rotation_curve_gas= rotation_curve_gas, \
+                          rotation_curve_bulge= rotation_curve_bulge, adrift = adrift, dispersion_profile = dispersion_profile)
+
         cube_nocont_path = src_output_path + src_name + "_"+ line+ "_cube_nocont.fits"
         cube_nocont = Cube(cube_nocont_path)
         cube_to_fit = cube_nocont
@@ -479,6 +492,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
     # Then we run galpak:
     if autorun == True:
         gk = galpak.autorun(cube_to_fit, model=model, instrument=instru, **kwargs)
+        print("running")
     else:
         gk = galpak.GalPaK3D(cube_to_fit, model=model, instrument=instru)
         
@@ -592,7 +606,9 @@ def run_galpak_all(input_path, output_path, field_list, snr_min = 15, mag_sdss_r
 
 def run_galpak_on_ids(input_path, output_path, ids, snr_min = 15, mag_sdss_r_max = 26,\
                    flux_profile = "sersic", rotation_curve = "tanh",autorun = False,\
-                   save = False, line = "OII", overwrite = True, suffix = "", **kwargs):
+                   save = False, line = "OII", overwrite = True, suffix = "", decomp = False, thickness_profile = "gaussian", \
+               rotation_curve_DM = "DC14", rotation_curve_disk = "MGE",rotation_curve_gas= "sgas", \
+               rotation_curve_bulge= "none", adrift = "Dalcanton", dispersion_profile = "thick", **kwargs,):
     """
     run galpak for a list of IDs.
     The ids must be a table with at least two columns: field_id, and ID
@@ -601,70 +617,74 @@ def run_galpak_on_ids(input_path, output_path, ids, snr_min = 15, mag_sdss_r_max
     
     k = 1
     for i, r in ids.iterrows():
-        try:
-            print("")
-            print(k, "/", N)
-            field = r["field_id"]
-            ID = r["ID"]
+        
+        print("")
+        print(k, "/", N)
+        field = r["field_id"]
+        ID = r["ID"]
 
-            input_path_field = input_path + field + "/" +"products/sources/"
-            src_name = field + "_source-"+str(ID)
-            src_path = input_path_field + src_name +".fits"
-            output_path_field = output_path + field + "/"
-            src_output_path = output_path_field + src_name+ "/"
-            print(src_name, src_path)
-            print(src_output_path)
+        input_path_field = input_path + field + "/" +"products/sources/"
+        src_name = field + "_source-"+str(ID)
+        src_path = input_path_field + src_name +".fits"
+        output_path_field = output_path + field + "/"
+        src_output_path = output_path_field + src_name+ "/"
+        print(src_name, src_path)
+        print(src_output_path)
 
-            # First we open the source:
-            src = Source.from_file(src_path)
+        # First we open the source:
+        src = Source.from_file(src_path)
 
-            # we get the SNR:
-            #try:
-            #print(src_output_path+"oii_snr.txt")
-            snr_df = pd.read_csv(src_output_path+line+"_snr.txt", sep = ",", index_col= None)
-            snr_s = snr_df.squeeze()
-            #print(oii_snr_s)
-            snr_from_src = snr_s["snr_from_src"]
-            snr_max = snr_s["snr_max"] 
-            #oii_snr = get_line_feature(src, line="OII3726", feature="SNR")
-            print(line + " SNR from src = ", snr_from_src, "  max = ", snr_max)
-            #except:
-            #    oii_3726_snr_from_src = 0
-            #    oii_snr_max = 0
-            #    print("WARNING: No oii SNR")
+        # we get the SNR:
+        #try:
+        #print(src_output_path+"oii_snr.txt")
+        snr_df = pd.read_csv(src_output_path+line+"_snr.txt", sep = ",", index_col= None)
+        snr_s = snr_df.squeeze()
+        #print(oii_snr_s)
+        snr_from_src = snr_s["snr_from_src"]
+        snr_max = snr_s["snr_max"] 
+        #oii_snr = get_line_feature(src, line="OII3726", feature="SNR")
+        print(line + " SNR from src = ", snr_from_src, "  max = ", snr_max)
+        #except:
+        #    oii_3726_snr_from_src = 0
+        #    oii_snr_max = 0
+        #    print("WARNING: No oii SNR")
 
-            #print("snr_min = ", snr_min)
-            if line != "cont":
-                if snr_from_src >= snr_min:
-                    print("**** RUN GALPAK")
-                    try: 
-                        run_galpak(src_path, output_path, \
+        #print("snr_min = ", snr_min)
+        if line != "cont":
+            if snr_from_src >= snr_min:
+                print("**** RUN GALPAK")
+                #try: 
+                run_galpak(src_path, output_path, \
+                       flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
+                   save = save, line = line, overwrite = overwrite, suffix = suffix, decomp = decomp,\
+                           thickness_profile = thickness_profile, rotation_curve_DM = rotation_curve_DM,\
+                          rotation_curve_disk = rotation_curve_disk, rotation_curve_gas= rotation_curve_gas, \
+                          rotation_curve_bulge= rotation_curve_bulge, adrift = adrift, dispersion_profile = dispersion_profile,\
+                       **kwargs)
+                
+                #except:
+                #    print(" !!!! RUN galpak FAILED !!!!")
+
+        else:
+            try:
+                t = src.tables["SPECPHOT_DR2"]
+                tt = t[t["ID"] == src.header["ID"]]
+                sdss_r = tt["mag_SDSS_r"][0]
+            except:
+                sdss_r = 99
+                print("WARNING: No SDSS mag")
+
+            if sdss_r <= mag_sdss_r_max:
+                print("**** RUN GALPAK")
+                try: 
+                    run_galpak(src_path, output_path, \
                                flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
-                           save = save, line = line, overwrite = overwrite, suffix = suffix,\
+                           save = save, line = line, overwrite = overwrite,\
                                **kwargs)
-                    except:
-                        print(" !!!! RUN FAILED !!!!")
-
-            else:
-                try:
-                    t = src.tables["SPECPHOT_DR2"]
-                    tt = t[t["ID"] == src.header["ID"]]
-                    sdss_r = tt["mag_SDSS_r"][0]
                 except:
-                    sdss_r = 99
-                    print("WARNING: No SDSS mag")
-
-                if sdss_r <= mag_sdss_r_max:
-                    print("**** RUN GALPAK")
-                    try: 
-                        run_galpak(src_path, output_path, \
-                                   flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
-                               save = save, line = line, overwrite = overwrite,\
-                                   **kwargs)
-                    except:
-                        print(" !!!! RUN FAILED !!!!")
-        except:
-            print(" !!!! RUN FAILED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                    print(" !!!! RUN FAILED !!!!")
+        #except:
+        #    print(" !!!! RUN FAILED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         k+=1
     return
 
