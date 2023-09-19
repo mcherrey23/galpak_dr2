@@ -915,9 +915,9 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     print("computing the neighbours")
     print("     around each galaxy")
     #return dr2
-    dr2 = get_Nxxx_neighb(dr2, radius = 150, dv = dv_abs_match) 
-    dr2 = get_Nxxx_neighb(dr2, radius = 100, dv = dv_abs_match)
-    dr2 = get_Nxxx_neighb(dr2, radius = 50, dv = dv_abs_match)
+    dr2 = get_Nxxx_neighb(dr2, radius = 150, dv = dv_primary) 
+    dr2 = get_Nxxx_neighb(dr2, radius = 100, dv = dv_primary)
+    dr2 = get_Nxxx_neighb(dr2, radius = 50, dv = dv_primary)
     
     # We identify the closest galaxy and it's distance:
     print("     Closest")
@@ -925,14 +925,16 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     
     # We compute the number of neighbour around the LOS:
     print("     around LOS")
-    dr2 = get_Nxxx_LOS_all(dr2, bmax = 100, dv = dv_abs_match)
-    dr2 = get_Nxxx_LOS_all(dr2, bmax = 2000, dv = dv_abs_match)
+    dr2 = get_Nxxx_LOS_all(dr2, bmax = 100, dv = dv_primary)
+    dr2 = get_Nxxx_LOS_all(dr2, bmax = 2000, dv = dv_primary)
     #print(dr2["field_id"].unique())
     
     # We also find the primary galaxies automatically:
     print("primary auto-identification")
-    dr2 = primary_auto(dr2, b_sep = b_sep, b_max = b_max, dv = dv_primary, \
-                       log_max_mass_satellite = log_max_mass_satellite, group_threshold = group_threshold)
+    dr2 = primary_auto2(dr2, b_sep = b_sep, b_max = b_max, dv = dv_primary, \
+                       group_threshold = group_threshold)
+    dr2 = isolated_auto(dr2, b_sep = b_sep, b_max = b_max, dv = dv_primary, \
+                       group_threshold = group_threshold)
     #print(dr2["field_id"].unique())
     
     # Then we match with the galpak results:
@@ -1424,7 +1426,7 @@ def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw
             line_snr = 0
             print("Z = ", z_src, " WARNING: no ", line, " SNR")
        
-
+    print("before condition")
     if z_src <= zmax_oii and line_snr >= snr_min:
         
         # We open the line table from the source:
@@ -1474,18 +1476,23 @@ def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw
         suffixeout = camel_path+"/camel"
 
         # we create the configuration file:
+        print("creating the config file")
         out = cc.create_config(path, cubefile, varfile, catfile, lines, suffixeout, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth)
         filename = camel_path +"/camel_"+str(src_id)+"_"+lines_dict[line] +".config"
         #/muse/MG2QSO/private/analysis/galpak_dr2/J0014m0028/J0014m0028_source-11122/camel/camel_11122_o2.config
         # then we run camel:
+        print("running camel")
         cml.camel(str(filename), plot=True)
 
         # Then we create an image with the velocity map:
         # for that we use the mask of the source:
-
-        vel = "/camel_"+ str(src_id) +"_"+lines_dict[line] +"_vel_common.fits"
-        snr = "/camel_"+ str(src_id) +"_"+lines_dict[line] +"_snr_common.fits"
-        disp = "/camel_"+ str(src_id) +"_"+lines_dict[line] +"_disp_common.fits"
+        if ssmooth == 0:
+            ssmooth_txt = ""
+        else:
+            ssmooth_txt = "_ssmooth"
+        vel = "/camel_"+ str(src_id) +"_"+lines_dict[line] + ssmooth_txt + "_vel_common.fits"
+        snr = "/camel_"+ str(src_id) +"_"+lines_dict[line] + ssmooth_txt + "_snr_common.fits"
+        disp = "/camel_"+ str(src_id) +"_"+lines_dict[line] + ssmooth_txt + "_disp_common.fits"
         hdul_vel = fits.open(camel_path+vel)
         hdul_snr = fits.open(camel_path+snr)
         hdul_disp = fits.open(camel_path+disp)
@@ -1557,6 +1564,44 @@ def build_velocity_map_all(field_list, input_path, output_path, snr_min = 15, co
         #pdf.close()
     
     return 
+#----------------------------------------------------
+
+def build_velocity_map_on_ids(input_path, output_path, ids, snr_min = 15, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=0):
+
+    """
+    build the velocity maps for a list of IDs.
+    The ids must be a table with at least two columns: field_id, and ID
+    """
+    N = len(ids)
+    
+    k = 1
+    for i, r in ids.iterrows():
+        
+        print("")
+        print(k, "/", N)
+        field = r["field_id"]
+        ID = r["ID"]
+        input_path_field = input_path + field + "/" + "products/sources/"        
+        src_name = field + "_source-"+str(ID)
+        src_path = input_path_field + src_name +".fits"
+        output_path_field = output_path + field + "/"
+        src_output_path = output_path_field + src_name+ "/"
+        print(src_name, src_path)
+        print(src_output_path)
+
+        # First we open the source:
+        src = Source.from_file(src_path)
+        try:    
+            fig = build_velocity_map(src_path, output_path, snr_min = snr_min, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth)
+                #if fig != 0:
+                #    pdf.savefig(fig)
+        except:
+            print("VELOCITY MAP FAILED")
+
+        #pdf.close()
+    
+    return 
+
 
 #-----------------------------------------------------------------
 
@@ -1590,19 +1635,19 @@ def calc_score(df):
         conv = r["x_convergence"]*r["y_convergence"]*r["z_convergence"]*r["flux_convergence"]*r["radius_convergence"]*\
         r["sersic_n_convergence"]*r["inclination_convergence"]*r["pa_convergence"]
     
-        if (r["ZCONF"] == 3) & (r["snr_eff"]>5)  & (conv > 0.95) & (r["N_satellites"] == 0) & \
+        if (r["ZCONF"] == 3) & (r["snr_eff"]>5)  & (conv > 0.95)  & \
         (r["primary_auto"] == 1) & (r["run_name"] != "run_cont"):
             score.append(3)
-        elif (r["ZCONF"] == 2) & (r["snr_eff"]>5) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1) \
+        elif (r["ZCONF"] == 2) & (r["snr_eff"]>5) & (r["primary_auto"] == 1) \
         & (r["run_name"] != "run_cont") & (conv > 0.95):
             score.append(2)
-        elif (r["ZCONF"] == 3) & (r["snr_eff"]>3) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1)\
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>3) & (r["primary_auto"] == 1)\
         & (r["run_name"] != "run_cont") & (conv > 0.95):
             score.append(2)
-        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["N_satellites"] == 0) & (r["primary_auto"] == 1)\
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["primary_auto"] == 1)\
         & (r["run_name"] != "run_cont") & (conv > 0.95):
             score.append(2)
-        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5) & (r["N_satellites"] == 1) & (r["primary_auto"] == 1)\
+        elif (r["ZCONF"] == 3) & (r["snr_eff"]>5)  & (r["primary_auto"] == 1)\
         & (r["run_name"] != "run_cont") & (conv > 0.95):
             score.append(2)
         #elif (r["ZCONF"] == 3) & (r["run_name"] == "run_cont") & (r["radius"]>1) & (r["N_satellites"] == 0) &\
@@ -1621,7 +1666,37 @@ def calc_score(df):
 
 #-----------------------------------------
 
-def primary_auto(df, b_max = 100, b_sep = 30, dv = 0.5e6, log_max_mass_satellite = 8, group_threshold = 4):
+def isolated_auto(df, b_max = 100, b_sep = 30, dv = 1e6, group_threshold = 4):
+    R = df.copy()
+    isol = []
+    
+    for i, r in R.iterrows():
+        p = 0
+        # a galaxy can be primary only if within 100kpc
+        if (r["B_KPC"] < b_max) and (r["is_QSO"] == 0) and (r["is_star"] == 0) and (r["Z"]< 1.5):
+            # we then compute the number of neighbours within B + b_sep kpc:
+            f1 = np.abs(R["Z"] - r["Z"])*const.c.value/(1+r["Z"])<dv
+            f2 = R["field_id"] == r["field_id"]
+            f3 = R["B_KPC"] <= r["B_KPC"] + b_sep
+            f4 = R["B_KPC"] <= b_max
+            Fbmax = R[f1 & f2 & f4]
+            Fbsep = R[f1 & f2 & f3]
+            # We don't consider galaxies in groups as primary:
+            if r["N2000_LOS"] <= group_threshold:
+                # to be primary, the galaxy must alone.. 
+                if (len(Fbmax) == 1) & (len(Fbsep)==1):
+                    p = 1
+                # .. or the closest one (not taking into account satellites)
+                else:
+                    p = 0
+        isol.append(p)
+    ISOL = np.array(isol)
+    R["isolated_auto"] = ISOL
+    return R
+
+#------------------------------------------
+
+def primary_auto(df, b_max = 100, b_sep = 30, dv = 1e6, log_max_mass_satellite = 8, group_threshold = 4):
     
     R = df.copy()
     
@@ -1663,6 +1738,38 @@ def primary_auto(df, b_max = 100, b_sep = 30, dv = 0.5e6, log_max_mass_satellite
     NSAT = np.array(Nsat)
     R["primary_auto"] = PRIM
     R["N_satellites"] = NSAT
+    return R
+
+#--------------------------------------------
+def primary_auto2(df, b_max = 100, b_sep = 30, dv = 1e6, group_threshold = 4):
+    
+    R = df.copy()
+    
+    prim = []
+    Nsat = []
+    
+    for i, r in R.iterrows():
+        p = 0
+        N_satellites = -1
+        # a galaxy can be primary only if within 100kpc
+        if (r["B_KPC"] < b_max) and (r["is_QSO"] == 0) and (r["is_star"] == 0) and (r["Z"]< 1.5):
+            # we then compute the number of neighbours within B + b_sep kpc:
+            f1 = np.abs(R["Z"] - r["Z"])*const.c.value/(1+r["Z"])<dv
+            f2 = R["field_id"] == r["field_id"]
+            f3 = R["B_KPC"] <= r["B_KPC"] + b_sep
+            F = R[f1 & f2 & f3] # without satellites
+            #print(r["ID"], len(Fall), is_closest, N_neighb)
+            # We don't consider galaxies in groups as primary:
+            if r["N2000_LOS"] <= group_threshold:
+                # to be primary, the galaxy must be the closest and the second neighb at B + b_sep kpc. 
+                if len(F) == 1:
+                    p = 1
+                # .. or the closest one (not taking into account satellites)
+                else:
+                    p = 0
+        prim.append(p)
+    PRIM = np.array(prim)
+    R["primary_auto"] = PRIM
     return R
 
 #------------------------------------------
@@ -1853,7 +1960,7 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
         score_auto = r["score_auto"]
         primary = r["primary"]
         primary_auto = r["primary_auto"]
-        N_satellites = r["N_satellites"]
+        isolated_auto = r["isolated_auto"]
         logMass = r["sed_logMass"]
 
         #print(output_dir, run_name, src_id, field_id)
@@ -1862,8 +1969,8 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
         title = field_id+" - " +str(src_id)+" - z = "+str(np.round(z_src, 3)) +" - B = "+str(B_KPC)+\
             " - REW2796 = "+str(REW2796)+" - log(M) = "+str(np.round(logMass,2)) + " - SNReff = " +str(np.round(snr_eff,1))+\
             " - incl = "+ str(np.round(incl,1))+" - alpha = "+str(np.round(alpha,1)) + " radius = " + str(np.round(radius,2))+  "\n "+\
-            "run = " + str(run_name) + " primary /prima.auto = "+str(primary)+"/"+str(primary_auto)+" score/score_auto = "+\
-            str(score)+"/"+str(score_auto)+" Nsat = " + str(N_satellites)
+            "run = " + str(run_name) + " primary = "+str(primary_auto)+ " isolated = "+str(isolated_auto) +" score_auto = "+\
+            str(score_auto)
 
         fig = plt.figure(figsize = (18,5))
         fig.suptitle(title)
@@ -1890,10 +1997,9 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
             plt.axis("off")
 
             # For the velmap:
-            #if 1 == 1:
             try:
-                vel = "camel/camel_"+ str(src_id) +"_"+"o2" +"_vel_common.fits"
-                snr = "camel/camel_"+ str(src_id) +"_"+"o2" +"_snr_common.fits"
+                vel = "camel_OII/camel_"+ str(src_id) +"_"+"o2_ssmooth" +"_vel_common.fits"
+                snr = "camel_OII/camel_"+ str(src_id) +"_"+"o2_ssmooth" +"_snr_common.fits"
                 velmap_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+vel
                 snr_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+snr
                 hdul_vel = fits.open(velmap_path)
