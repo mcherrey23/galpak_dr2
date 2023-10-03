@@ -693,7 +693,7 @@ def run_galpak_on_ids(input_path, output_path, ids, snr_min = 15, mag_sdss_r_max
 
 # -------------------------------------------------------
 
-def extract_result_single_run(run_name, src_output_path):
+def extract_result_single_run(run_name, src_output_path, decomp = False):
     gal_param_ext = "galaxy_parameters.dat"
     convergence_ext = "galaxy_parameters_convergence.dat"
     derived_param_ext = "run_derived_parameters.dat"
@@ -745,8 +745,13 @@ def extract_result_single_run(run_name, src_output_path):
     
     #--- for the galaxy parameters file ------
     try:
-        gal_param_cols = ["x", "y", "z", "flux", "radius", "sersic_n", "inclination", "pa", "turnover_radius", \
-                         "maximum_velocity", "velocity_dispersion"]
+        if decomp == True:
+            gal_param_cols = ["x", "y", "z", "flux", "radius", "sersic_n", "inclination", "pa", "concentration", \
+                             "virial_velocity", "velocity_dispersion", "gas_density", "log_X", "line_ratio"]
+        else:
+            gal_param_cols = ["x", "y", "z", "flux", "radius", "sersic_n", "inclination", "pa", "turnover_radius", \
+                             "maximum_velocity", "velocity_dispersion"]
+            
         gal_param_error_cols = [col + "_err"  for col in gal_param_cols]
         gal_param = gal_param_df[gal_param_cols]
     except:
@@ -756,7 +761,6 @@ def extract_result_single_run(run_name, src_output_path):
         
     gal_param_values = np.array(gal_param.loc[0])
     gal_param_errors = np.array(gal_param.loc[1])
-
     
     gal_param_data = np.array(list(gal_param_values) + list(gal_param_errors))
     gal_param_all_cols = np.array(gal_param_cols + gal_param_error_cols)
@@ -765,7 +769,12 @@ def extract_result_single_run(run_name, src_output_path):
     
     #--- for the derived parameters file ------
     if line_name != "cont":
-        derived_param_cols = ["v22", "dvdx", "log_Mdyn", "Jtot", "JRF12", "log_Mtot", "BTmass", "rad_kpc", "v2kpc"]
+        if decomp == True:
+            derived_param_cols = ["v22", "dvdx", "log_Mdyn", "Jtot", "JRF12", "log_Mvir", "Rvir", "log_Mdisk", "log_Mtot",\
+                                 "BTmass", "fDM_at_Re", "drho_1kpc", "drho_150pc", "c_nfw", "rad_kpc", "v2kpc", "alpha", \
+                                 "beta", "gamma", "rho_150pc", "rhos", "rs_kpc"]
+        else:
+            derived_param_cols = ["v22", "dvdx", "log_Mdyn", "Jtot", "JRF12", "log_Mtot", "BTmass", "rad_kpc", "v2kpc"]
         derived_param_error_cols = [col + "_err"  for col in derived_param_cols]
         derived_param = derived_param_df[derived_param_cols]
 
@@ -857,6 +866,67 @@ def extract_results_all(output_path):
     
     return Results
 
+#-------------------------------------------------------------
+
+def extract_results_on_ids(ids, output_path, decomp = True):
+    """
+    extract all the results for all the fields of the output directory and build a table with a line per source and per run.
+    """
+    results_list = []
+    N = len(ids)
+    k = 1
+    for i, r in ids.iterrows(): 
+        print("")
+        print(k, "/", N)
+        field = r["field_id"]
+        ID = r["ID"]
+        src_name = field + "_source-"+str(ID)
+        print(field, " ", ID)
+        #src_path = input_path_field + src_name +".fits"
+        output_path_field = output_path + field + "/"
+        src_output_path = output_path_field + src_name+ "/"
+        if os.path.isdir(src_output_path):
+            run_list = os.listdir(src_output_path)
+            run_list = [run for run in run_list if os.path.isdir(src_output_path + run +"/")]
+            run_list = [run for run in run_list if len(os.listdir(src_output_path + run +"/"))!=0]
+            run_list = [run for run in run_list if "run" in run]
+            run_decomp = [run for run in run_list if "decomp" in run]
+            run_no_decomp = [run for run in run_list if "decomp" not in run]
+            #print(len(run_list), len(run_decomp), len(run_no_decomp))
+            if (decomp == False) and (len(run_no_decomp) != 0):
+                for r in run_no_decomp:
+                    run_output_path = src_output_path + r +"/"
+                    print("    ",r)
+                    df = extract_result_single_run(r, src_output_path, decomp = False)
+                    df.insert(0, "field_id", [field])
+                    df.insert(1, "source_id", [src_name[-5:]])
+                    df.insert(2, "run_name", [r])
+                    results_list.append(df)
+            elif (decomp == True) and (len(run_decomp) != 0):
+                for r in run_decomp:
+                    run_output_path = src_output_path + r +"/"
+                    print("    ",r)
+                    df = extract_result_single_run(r, src_output_path, decomp = True)
+                    df.insert(0, "field_id", [field])
+                    df.insert(1, "source_id", [src_name[-5:]])
+                    df.insert(2, "run_name", [r])
+                    results_list.append(df)
+        k += 1
+        
+    Results = pd.concat(results_list, ignore_index= True)
+    # Finally we compute the SNR eff for
+    muse_sampling = 0.2 #arcesc per pixel
+
+    Results["snr_eff"] = Results["snr_max"]*Results["radius"]*muse_sampling/Results["psf_fwhm"]
+    print("Number of run extracted = ", len(Results))
+
+    # Finally we rename the ID column to be consistent with other catalogs:
+    Results = Results.rename(columns={"source_id": "ID"})
+    Results["ID"] = Results["ID"].astype(int)
+    
+
+    return Results
+
 
 #---------------------------------------------------------
 
@@ -885,7 +955,8 @@ def delete_empty_runs(path, field_list):
 
 def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path, primary_tab_path, output_path = "", \
                                media_path = "", dv_abs_match = 0.5e6, export = False, export_name = "runs.csv", b_sep = 20,\
-                               b_max = 100, dv_primary = 0.5e6, log_max_mass_satellite = 8, group_threshold = 4):
+                               b_max = 100, dv_primary = 0.5e6, log_max_mass_satellite = 8, group_threshold = 4, \
+                                decomp = False):
     
     # First we match the galpak results with the DR2:
     print("match with DR2")
@@ -960,14 +1031,15 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     print("calc SFR")
     R = calc_SFR(R)
     
-    # And the virial radius, virial mass from Vmax:
-    print("calc virial mass, radius and halo parameters")
-    print(R["log_Mdyn"].dtype)
-    #R["Rdyn"] = get_Rvir(10**R["log_Mdyn"], R["Z"])
-    R["Rvir"] = get_Rvir_from_Vvir(R["maximum_velocity"], R["Z"])
-    R["Mvir"] = get_Mvir_from_Vvir(R["maximum_velocity"], R["Z"])
-    R["rho0"], R["rs"] = get_nfw_param(R["Mvir"], R["Z"])
-    
+    # And the virial radius, virial mass from Vmax if we do not have decomposition:
+    if decomp == False:
+        print("calc virial mass, radius and halo parameters")
+        print(R["log_Mdyn"].dtype)
+        #R["Rdyn"] = get_Rvir(10**R["log_Mdyn"], R["Z"])
+        R["Rvir"] = get_Rvir_from_Vvir(R["maximum_velocity"], R["Z"])
+        R["Mvir"] = get_Mvir_from_Vvir(R["maximum_velocity"], R["Z"])
+        R["rho0"], R["rs"] = get_nfw_param(R["Mvir"], R["Z"])
+
     
     # and we export the result:
     if export:
