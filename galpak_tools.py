@@ -820,7 +820,7 @@ def extract_result_single_run(run_name, src_output_path, decomp = False):
 
 # -------------------------------------------------------
 
-def extract_results_all(output_path):
+def extract_results_all(output_path, decomp = False):
     """
     extract all the results for all the fields of the output directory and build a table with a line per source and per run.
     """
@@ -832,23 +832,40 @@ def extract_results_all(output_path):
             src_list = os.listdir(field_output_path)
             print(f)
             for s in src_list:
+                print(s)
                 src_output_path = field_output_path + s +"/"
                 if os.path.isdir(src_output_path):
                     run_list = os.listdir(src_output_path)
-                    print(" ",s)
-                    for r in run_list:
-                        run_output_path = src_output_path + r +"/"
-                        if os.path.isdir(run_output_path) and ("run" in r) and (len(os.listdir(run_output_path))!=0):
+                    run_list = [run for run in run_list if os.path.isdir(src_output_path + run +"/")]
+                    run_list = [run for run in run_list if len(os.listdir(src_output_path + run +"/"))!=0]
+                    run_list = [run for run in run_list if "run" in run]
+                    run_decomp = [run for run in run_list if "decomp" in run]
+                    run_no_decomp = [run for run in run_list if "decomp" not in run]
+                    #print(len(run_list), len(run_decomp), len(run_no_decomp))
+                    if (decomp == False) and (len(run_no_decomp) != 0):
+                        for r in run_no_decomp:
+                            run_output_path = src_output_path + r +"/"
                             print("    ",r)
-                            #if 1==1:
                             try:
-                                df = extract_result_single_run(r, src_output_path)
+                                df = extract_result_single_run(r, src_output_path, decomp = False)
                                 df.insert(0, "field_id", [f])
                                 df.insert(1, "source_id", [s[-5:]])
                                 df.insert(2, "run_name", [r])
                                 results_list.append(df)
                             except:
-                                print("  !!! EXTRACTION FAILED !!!")
+                                print("!!! EXTRACTION FAILED!")
+                    elif (decomp == True) and (len(run_decomp) != 0):
+                        for r in run_decomp:
+                            run_output_path = src_output_path + r +"/"
+                            print("    ",r)
+                            try:
+                                df = extract_result_single_run(r, src_output_path, decomp = True)
+                                df.insert(0, "field_id", [f])
+                                df.insert(1, "source_id", [s[-5:]])
+                                df.insert(2, "run_name", [r])
+                                results_list.append(df)  
+                            except:
+                                print("!!! EXTRACTION FAILED!")
 
     Results = pd.concat(results_list, ignore_index= True)
     
@@ -1016,12 +1033,12 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     R = compute_alpha(R)
     
     # We read the primary & score tab:
-    print("read primary")
-    R = read_primary_and_scores(R, primary_tab_path)
+    #print("read primary")
+    #R = read_primary_and_scores(R, primary_tab_path)
     
     # We give the adresses of the runs (to make hyperlink easily):
-    R["address_link"] = output_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
-    R["address_perso"] = media_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
+    #R["address_link"] = output_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
+    #R["address_perso"] = media_path+R["field_id"]+"/"+R["field_id"]+"_source-"+R["ID"].astype(str)
 
     # Finally we compute an automatic score:
     print("calc score auto")
@@ -1451,7 +1468,7 @@ def build_all_continuum(field_list, input_path, output_path, mag_sdss_r_max = 26
 
 #-----------------------------------------
 
-def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=2.):
+def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=2., overwrite = False):
     # we open the source file:
     src = Source.from_file(src_path)
     src_name = src_path[-28:-5] # the source name in the format "JxxxxXxxxx_source_xxxxx"
@@ -1459,10 +1476,20 @@ def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw
     field =  src_path[-28:-18] # the field id in the format JxxxxXxxxx"
     output_path_field = output_path + field + "/"
     src_output_path = output_path_field + src_name+ "/"
-    camel_path = src_output_path +"camel_"+line
-    os.makedirs(camel_path, exist_ok=True)
+    save_name = "camel_"+line
+    camel_path = src_output_path + save_name
     
     lines_dict = {"HALPHA":"ha", "OII":"o2", "OIII5007": "o3"}
+    
+    output_dir_list = os.listdir(src_output_path)
+    if overwrite == False:
+        if save_name in output_dir_list:
+            file_list = os.listdir(camel_path)
+            if len(file_list) != 0:
+                print("SKIP job: folder already exists")
+                return
+        else:
+            os.makedirs(camel_path, exist_ok=True)
     
     # We extract the redshift of the source:
     try:
@@ -1610,7 +1637,7 @@ def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw
     return 
 
 #----------------------------------------------------------------
-def build_velocity_map_all(field_list, input_path, output_path, snr_min = 15, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=0):
+def build_velocity_map_all(field_list, input_path, output_path, snr_min = 15, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=0, overwrite = False):
     """
     extract the continuum around the oii line for all the sources in the input folder
     """
@@ -1627,7 +1654,7 @@ def build_velocity_map_all(field_list, input_path, output_path, snr_min = 15, co
                 src_input_path = input_path_field + src_file
                 src_output_path = output_path_field
                 try:    
-                    fig = build_velocity_map(src_input_path, output_path, snr_min = snr_min, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth)
+                    fig = build_velocity_map(src_input_path, output_path, snr_min = snr_min, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth, overwrite = overwrite)
                 #if fig != 0:
                 #    pdf.savefig(fig)
                 except:
@@ -1638,7 +1665,7 @@ def build_velocity_map_all(field_list, input_path, output_path, snr_min = 15, co
     return 
 #----------------------------------------------------
 
-def build_velocity_map_on_ids(input_path, output_path, ids, snr_min = 15, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=0):
+def build_velocity_map_on_ids(input_path, output_path, ids, snr_min = 15, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=0, overwrite = False):
 
     """
     build the velocity maps for a list of IDs.
@@ -1664,13 +1691,14 @@ def build_velocity_map_on_ids(input_path, output_path, ids, snr_min = 15, common
         # First we open the source:
         src = Source.from_file(src_path)
         try:    
-            fig = build_velocity_map(src_path, output_path, snr_min = snr_min, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth)
+            fig = build_velocity_map(src_path, output_path, snr_min = snr_min, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth, overwrite = overwrite)
                 #if fig != 0:
                 #    pdf.savefig(fig)
         except:
             print("VELOCITY MAP FAILED")
 
         #pdf.close()
+        k += 1
     
     return 
 
@@ -1855,7 +1883,29 @@ def get_best_run(runs):
         rr["run_convergence_global"] = rr["x_convergence"]*rr["y_convergence"]*rr["z_convergence"]*rr["inclination_convergence"]*rr["radius_convergence"]*rr["flux_convergence"]*rr["pa_convergence"]
         rr["is_not_cont_run"] = rr["run_name"] != "run_cont" 
         rr["minus_chi2_at_p"] = -rr["chi2_at_p"]
-        rr.sort_values(by = ["score_auto", "is_not_cont_run", "run_convergence_global", "minus_chi2_at_p"], \
+        rr["minus_BIC"] = -rr["BIC"]
+        rr.sort_values(by = ["is_not_cont_run", "run_convergence_global", "minus_BIC"], \
+                       inplace = True, ignore_index = True, ascending = False)
+        r_list.append(rr[:1])
+    
+    R = pd.concat(r_list)
+    return R
+
+#---------------------------------------------------------------------
+
+def get_best_run2(runs):
+    
+    ids = runs["ID"].unique()
+    r_list = []
+    
+    for i in ids:
+        rr = runs[runs["ID"] == i]
+        rr["run_convergence_global"] = rr["x_convergence"]*rr["y_convergence"]*rr["z_convergence"]*rr["inclination_convergence"]*rr["radius_convergence"]*rr["flux_convergence"]*rr["pa_convergence"]
+        rr["is_not_cont_run"] = rr["run_name"] != "run_cont" 
+        rr["is_multinest"] = rr["run_name"].str.contains("multinest") 
+        rr["minus_chi2_at_p"] = -rr["chi2_at_p"]
+        rr["minus_BIC"] = -rr["BIC"]
+        rr.sort_values(by = ["is_not_cont_run", "is_multinest", "run_convergence_global", "minus_BIC"], \
                        inplace = True, ignore_index = True, ascending = False)
         r_list.append(rr[:1])
     
@@ -2007,17 +2057,12 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
     """
     Make a pdf file that is a very synthetic view of the galaxies in input, and their best associated galpak runs
     """
-    # First we select the primaries:
-    #f30 = R["primary"] == 1
-    #f31 = R["primary_auto"] == 1
-    #rr = R[f30 | f31]
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-    # Then we build the pdf:
     k = 0
     pdf_name = output_dir+file_name + ".pdf"
     pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_name)
     for i, r in rr.iterrows():
-        #print(r[["run_name"]])
         field_id = r["field_id"]
         src_id = r["ID"] 
         run_name = r["run_name"]
@@ -2028,9 +2073,9 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
         alpha = r["alpha"]
         radius = r["radius"]
         snr_eff = r["snr_eff"]
-        score = r["galpak_score"]
-        score_auto = r["score_auto"]
-        primary = r["primary"]
+        #score = r["galpak_score"]
+        #score_auto = r["score_auto"]
+        #primary = r["primary"]
         primary_auto = r["primary_auto"]
         isolated_auto = r["isolated_auto"]
         logMass = r["sed_logMass"]
@@ -2041,10 +2086,17 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
         title = field_id+" - " +str(src_id)+" - z = "+str(np.round(z_src, 3)) +" - B = "+str(B_KPC)+\
             " - REW2796 = "+str(REW2796)+" - log(M) = "+str(np.round(logMass,2)) + " - SNReff = " +str(np.round(snr_eff,1))+\
             " - incl = "+ str(np.round(incl,1))+" - alpha = "+str(np.round(alpha,1)) + " radius = " + str(np.round(radius,2))+  "\n "+\
-            "run = " + str(run_name) + " primary = "+str(primary_auto)+ " isolated = "+str(isolated_auto) +" score_auto = "+\
-            str(score_auto)
+            "run = " + str(run_name) +  " isolated = "+str(isolated_auto) 
 
-        fig = plt.figure(figsize = (18,5))
+        fig = plt.figure(figsize=(14, 14), dpi = 250)
+        gs = fig.add_gridspec(3, 3, left=0.1, right=0.9, bottom=0.1, top=0.9,
+                              wspace=0.2, hspace=0.0)
+        # Create the Axes.
+        ax_meas = fig.add_subplot(gs[0:1, 0:1])
+        ax_model = fig.add_subplot(gs[0:1, 1:2])
+        ax_velmap = fig.add_subplot(gs[0:1, 2:3])
+        ax_conv = fig.add_subplot(gs[1:3, 0:3])
+
         fig.suptitle(title)
 
         #print(type(run_name))
@@ -2056,17 +2108,21 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
             img_run = plt.imread(run_path + "run_images.png")
             img_measured = img_run[10:320, 140:440]
 
-            # For th model:
-            img_model_conv = plt.imread(run_path + "run_obs_maps.png")
-            img_model_conv = img_model_conv[50:320, 430:730]
+            # For the model:
+            img_model = plt.imread(run_path + "run_obs_maps.png")
+            img_model = img_model[50:320, 430:730]
 
-            plt.subplot(131)
-            plt.imshow(img_measured)
-            plt.axis("off")
+            # For the convergence:
+            img_conv = plt.imread(run_path + "run_mcmc.png")
 
-            plt.subplot(132)
-            plt.imshow(img_model_conv)
-            plt.axis("off")
+            ax_meas.imshow(img_measured)
+            ax_meas.axis("off")
+
+            ax_model.imshow(img_model)
+            ax_model.axis("off")
+
+            ax_conv.imshow(img_conv)
+            ax_conv.axis("off")
 
             # For the velmap:
             try:
@@ -2084,24 +2140,25 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
                 extent_arcsec = np.array([-0.2*15, 0.2*15,-0.2*15, 0.2*15])
                 extent_kpc = extent_arcsec*kpc_per_arcsec
 
-                plt.subplot(133)
-                #plt.title("velocity map (snr>4 mask)")
-                plt.imshow(img_vel*m, vmin = -150, vmax = 150, cmap = "bwr", extent = extent_kpc)
-                cbar = plt.colorbar(label = "Dv [km/s]")
-                plt.xlabel("x [kpc]", size = 12)
-                plt.ylabel("y [kpc]", size = 12)
-                plt.gca().invert_yaxis()
+                divider = make_axes_locatable(ax_velmap)
+                cax = divider.append_axes('right', size='5%', pad=0.05)
+                im = ax_velmap.imshow(img_vel*m, vmin = -150, vmax = 150, cmap = "bwr", extent = extent_kpc)
+                fig.colorbar(im, cax=cax, orientation='vertical')
+                #plt.colorbar(ax_velmap, label = "Dv [km/s]")
+                ax_velmap.set_xlabel("x [kpc]", size = 12)
+                ax_velmap.set_ylabel("y [kpc]", size = 12)
+                ax_velmap.invert_yaxis()
                 #fig.savefig(pdf, format='pdf')
             except:
                 print(src_id, ": no vel. map")
-                plt.subplot(133)
-                plt.scatter(0,0, c = "white")
+                #plt.subplot(133)
+                ax_velmap.scatter(0,0, c = "white")
 
         else:
             print(src_id ,": no run" , run_name, type(run_name))
-            plt.subplot(131)
-            plt.scatter(0,0, c = "white")
-            plt.axis("off")
+            #plt.subplot(131)
+            ax_meas.scatter(0,0, c = "white")
+            ax_meas.axis("off")
 
         fig.savefig(pdf, format='pdf')
 
@@ -2197,6 +2254,30 @@ def Correa(Mvir, z):
     log10_c = a + b*np.log10(Mvir)*(1 + g*(np.log10(Mvir))**2)
     
     return 10**log10_c
+
+def Behroozi(log10Mstar, z):
+    a = 1/(1+z)
+    M00 = 11.09
+    M0a = 0.56
+    M10 = 12.27
+    M1a = -0.84
+    beta0 = 0.65
+    betaa = 0.31
+    delta0 = 0.56
+    deltaa = -0.12
+    gamma0 = 1.12
+    gammaa = -0.53
+    
+    log10M1 = M10 + M1a*(a-1)
+    log10M0 = M00 + M0a*(a-1)
+    beta = beta0 + betaa*(a-1)
+    delta = delta0 + deltaa*(a-1)
+    gamma = gamma0 + gammaa*(a-1)
+    
+    log10Mh = log10M1 + beta*(log10Mstar - log10M0) \
+                + ((10**log10Mstar/(10**log10M0))**delta)/(1 + (10**log10Mstar/(10**log10M0))**-gamma)\
+                - 0.5
+    return log10Mh
 
 
 
