@@ -456,20 +456,11 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         myline = None
         
     if (line  != "cont") & (decomp == False):
-        model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve= rotation_curve, redshift=z_src, thickness_profile = thickness_profile, line = myline)
+        model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve = rotation_curve, redshift=z_src, thickness_profile = thickness_profile, line = myline)
         cube_nocont_path = src_output_path + src_name + "_"+ line+ "_cube_nocont.fits"
         cube_nocont = Cube(cube_nocont_path)
         cube_to_fit = cube_nocont
-        #pmin = model.Parameters()
-        #pmax = model.Parameters()
-        #pmin.x = 5
-        #pmin.y = 5
-        #pmin.z = 5
-        #pmin.radius = 2
-        #pmax.x = 25
-        #pmax.y = 25
-        #pmax.z = 25
-        #pmax.radius = 20
+
         
     elif (line  != "cont") & (decomp == True):
         print("/!\ Decomposition model")
@@ -481,6 +472,15 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         cube_nocont_path = src_output_path + src_name + "_"+ line+ "_cube_nocont.fits"
         cube_nocont = Cube(cube_nocont_path)
         cube_to_fit = cube_nocont
+        
+        #model = galpak.DiskModel()
+        pmin = model.Parameters()
+        pmax = model.Parameters()
+        pmin.log_X = -3
+        pmax.log_X = -1.2
+        #pmin.sersic_n = 0.2
+        #pmax.sersic_n = 5
+        
     else:
         model = galpak.ModelSersic2D(flux_profile = flux_profile, redshift=z_src, line = myline)
         cube_cont_path_list = glob.glob(src_output_path + src_name + "_cube_cont*.fits")
@@ -496,7 +496,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
     else:
         gk = galpak.GalPaK3D(cube_to_fit, model=model, instrument=instru)
         
-        gk.run_mcmc(**kwargs)
+        gk.run_mcmc(min_boundaries = pmin, max_boundaries = pmax, **kwargs)
         #gk.run_mcmc(min_boundaries = pmin, max_boundaries = pmax, **kwargs)
         
         
@@ -509,6 +509,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         os.makedirs(galpak_output_path, exist_ok=True)
         galpak_output_name = galpak_output_path + "run"
         gk.save(galpak_output_name, overwrite=True)
+        #gk.plot_images(galpak_output_name+".png", z_crop = 15)
         print(galpak_output_path)
 
     return
