@@ -14,9 +14,10 @@ from astropy.coordinates import SkyCoord
 from astropy import constants as const
 from astropy import units as u
 from astropy.coordinates import SkyCoord, Distance
-from astropy.cosmology import Planck18 as cosmo
-from astropy.cosmology import WMAP9 
+from astropy.cosmology import Planck18
+from astropy.cosmology import WMAP9 as cosmo
 from scipy.stats import binned_statistic
+from scipy.ndimage import gaussian_filter
 import matplotlib.backends.backend_pdf
 
 import mpdaf
@@ -78,7 +79,7 @@ def get_line_feature(hdul, line="OII3726", feature="SNR"):
         return 10000
 """
 #----------------------------------------------------------------------------
-def get_line_feature(src, line="OII3726", feature="SNR"):
+def get_line_feature(src, line="OII3726", feature="SNR", family = "balmer"):
     """
     get a specific line feature from a fits file. For example the SNR of the OII line
     """
@@ -87,7 +88,7 @@ def get_line_feature(src, line="OII3726", feature="SNR"):
     if line in PL_LINES["LINE"]:
         l = PL_LINES[PL_LINES["LINE"] == line]
         f1 = l["FAMILY"] == "all"
-        f2 = l["FAMILY"] == "balmer"
+        f2 = l["FAMILY"] == family
         #l = l[f1 | f2]
         return l[feature][0]
 
@@ -111,7 +112,7 @@ def get_z_src(src):
 
 #------------------------------------------------------------------------
 
-def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
+def substract_continuum(src_path, output_path, snr_min = 15, line="OII", family = "balmer", mask_neighb = False):
     """
     Take a source file as an input, substract the continuum of the cube around a given line/doublet
     and save the output.
@@ -124,6 +125,7 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         
         - line: the target emission line around which we want to extract the cube. Could be:
                 OII, OIII5007, HALPHA, 
+        - mask_neighb: if True, the segmentation map is used to mask the neighbour sources.
         
     output: 
         - a cube of 32 spaxel centered on the emission line.
@@ -150,8 +152,8 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
     # we get the SNR:
     if line == "OII":
     #try:
-        oii_3726_snr = get_line_feature(src, line="OII3726", feature="SNR")
-        oii_3729_snr = get_line_feature(src, line="OII3729", feature="SNR")
+        oii_3726_snr = get_line_feature(src, line="OII3726", feature="SNR", family = family)
+        oii_3729_snr = get_line_feature(src, line="OII3729", feature="SNR", family = family)
         line_snr = max(oii_3726_snr, oii_3729_snr)
         print("Z = ", z_src, " OII SNR = ", oii_3726_snr, oii_3729_snr)
     #except:
@@ -159,7 +161,7 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
      #   print("Z = ", z_src, " WARNING: no [OII] SNR")
     else:
         try:
-            line_snr = get_line_feature(src, line= line, feature="SNR")
+            line_snr = get_line_feature(src, line= line, feature="SNR", family = family)
             print("Z = ", z_src," ", line, " SNR = ", line_snr)
         except:
             line_snr = 0
@@ -190,7 +192,7 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         else:
             tt = t[t["LINE"] == line]
             f1 = tt["FAMILY"] == "all"
-            f2 = tt["FAMILY"] == "balmer"
+            f2 = tt["FAMILY"] == family
             tt = tt[f1 | f2]
             L_central_rest = tt["LBDA_REST"][0]
             L_central = tt["LBDA_REST"][0] * (1 + tt["Z"][0])
@@ -227,36 +229,40 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         cube_central_nocont = cube_central - cont_mean
         cube_central_nb_nocont = cube_central_nb - cont_mean
         
-        # We get the source mask:
-        mask_obj = src.images["MASK_OBJ"]
-        ma = mask_obj.data
-        mask = np.ma.getdata(ma)
+        # the shape of the different cubes:
         l = cube.shape[0]
         l_central = cube_central.shape[0]
         l_nb = cube_central_nb.shape[0]
+        
+        # We get the segmentation map mask (we exclude other objects):
+        if mask_neighb == True:
+            if line == "OII":
+                mask = src.images["SEGNB_EMI_OII3727"].data
+                mask = (mask<=1).astype(int)
+            else:
+                mask = src.images["SEGNB_EMI_COMBINED"].data
+                mask = (mask<=1).astype(int)
+        else:
+            mask = np.ones(src.images["SEGNB_EMI_OII3727"].shape)
+
         M = np.repeat(mask[np.newaxis, :, :], l, axis=0) # the 3D mask for the cube
         M_central = np.repeat(mask[np.newaxis, :, :], l_central, axis=0) # the 3D mask for the line cube
         M_nb = np.repeat(mask[np.newaxis, :, :], l_nb, axis=0) # the 3D mask for the narrow band cube
         
+        # And the object mask:
+        mask_obj = src.images["MASK_OBJ"]
+        mask_obj = mask_obj.data
+        mask_obj = np.ma.getdata(mask_obj)
+        Mobj = np.repeat(mask_obj[np.newaxis, :, :], l, axis=0) # the 3D mask for the cube
+        Mobj_central = np.repeat(mask_obj[np.newaxis, :, :], l_central, axis=0) # the 3D mask for the line cube
+        Mobj_nb = np.repeat(mask_obj[np.newaxis, :, :], l_nb, axis=0) # the 3D mask for the narrow band cube
+        
         # the SNR estimation:
         try:
-            noise_left = (cube_left.data).std(axis = 0)
-            noise_right = (cube_right.data).std(axis = 0)
-            #cont_mean = 0.5 * (cont_left + cont_right)
-            if (cube.wave.pixel(L_central) - 150 > 0) & (cube.wave.pixel(L_central) + 150 < cube.shape[0]):
-                avg_noise = 0.5*(noise_left + noise_right) # the map of noise per pixel
-            elif (cube.wave.pixel(L_central) - 150 > 0):
-                avg_noise = noise_left
-            elif (cube.wave.pixel(L_central) + 150 < cube.shape[0]):
-                avg_noise = noise_right
             signal = (cube_central_nocont.data).max(axis = 0)
-            snr = signal/avg_noise # this is a map of SNR per pixel.
-            snr_source = snr*mask_obj
-            snr_max = snr_source.max() #the maximum snr among pixels
-            # we save the SNR values in a text file that we will be able to read later:
-            #print("L central: ", L_central)
-            #print("noise_left: ", noise_left)
-            #print("noise_right: ", noise_right)
+            snr = cube_central_nocont.data*mask_obj/((cube_central_nocont.var*mask_obj)**0.5)
+            snr_max = np.max(snr)
+                        
             print("snr_max = ", snr_max)
         except:
             print("SNR max calc failed !")
@@ -275,10 +281,14 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         pdf_name = src_output_path+"/"+ src_name+"_"+ line +"_continuum_sub.pdf"
         pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_name)
 
-
+        # the cube central masked with the segmentation map
+        cube_objmasked = cube*Mobj
+        cube_central_nocont_masked = cube_central_nocont * M_central
+        cube_central_nb_nocont_masked = cube_central_nb_nocont * M_nb
+        cube_central_nocont_objmasked = cube_central_nocont*Mobj_central
+        
         ima_central = cube_central.sum(axis=0)
         ima_central_nb_nocont = cube_central_nb_nocont.sum(axis=0)
-        cube_central_nb_nocont_masked = cube_central_nb_nocont * M_nb
         ima_central_nb_nocont_masked = cube_central_nb_nocont_masked.sum(axis=0)
         title = src_name + " z = " + str(z_src)
         fig = plt.figure(figsize=(12, 10))
@@ -291,7 +301,10 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         plt.subplot(222)
         title_after = "after substraction "+ line+" snr = " + str(np.round(line_snr, 2)) + " SNRmax = "+ str(np.round(snr_max, 2))
         plt.title(title_after)
-        ima_central_nb_nocont.plot(scale='arcsinh', colorbar='v', vmin=0, vmax=100)
+        if family != "abs":
+            ima_central_nb_nocont_masked.plot(scale='arcsinh', colorbar='v', vmin=0, vmax=100)
+        else:
+            ima_central_nb_nocont_masked.plot(scale='arcsinh', colorbar='v', vmin=-100, vmax=100)
 
         plt.subplot(223)
         plt.title("full spectrum")
@@ -300,8 +313,8 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         plt.axvline(L_central - 20, color="lightgray", linestyle=":")
         plt.axvline(L_central + 20 + 150, color="lightgray", linestyle=":")
         plt.axvline(L_central + 20, color="lightgray", linestyle=":")
-        cube_masked = cube*M
-        sp = cube_masked.sum(axis = (1,2))
+        #cube_masked = cube*M
+        sp = cube_objmasked.sum(axis = (1,2))
         #sp = cube_masked[:, 15, 15]
         sp.plot()
         plt.axhline(0, color="red")
@@ -309,14 +322,12 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
         plt.subplot(224)
         title = line +" continuum substracted"
         plt.title(title)
-        cube_central_nocont_masked = cube_central_nocont*M_central
-        sp = cube_central_nocont_masked.sum(axis = (1,2))
-        #sp = cube_oii_nocont[:, 15, 15]
+        sp = cube_central_nocont_objmasked.sum(axis = (1,2))
         sp.plot()
         plt.axhline(0, color="red")
 
         cube_nocont_output_path = output_path_field + src_name + "/" + src_name +"_"+ line +"_cube_nocont.fits"
-        cube_central_nocont.write(cube_nocont_output_path)
+        cube_central_nocont_masked.write(cube_nocont_output_path)
         pdf.savefig(fig)
 
         pdf.close()
@@ -329,7 +340,7 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII"):
 
 #-------------------------------------------------------------------------
 
-def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, line = "OII"):
+def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, line = "OII", mask_neighb = False):
     """
     extract the continuum around the oii line for all the sources in the input folder
     """
@@ -351,7 +362,8 @@ def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, l
                 src_input_path = input_path_field + src_file
                 src_output_path = output_path_field
                 try:    
-                    fig = substract_continuum(src_input_path, output_path, snr_min = snr_min, line = line)
+                    fig = substract_continuum(src_input_path, output_path, snr_min = snr_min, line = line, \
+                                              mask_neighb = mask_neighb)
                     if fig != 0:
                         pdf.savefig(fig)
                 except:
@@ -362,7 +374,7 @@ def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, l
     return
 
 #----------------------------------------------------------------------------
-def substract_continuum_on_ids(ids, input_path, output_path, snr_min = 15, line = "OII"):
+def substract_continuum_on_ids(ids, input_path, output_path, snr_min = 15, line = "OII", family = "balmer", mask_neighb = False):
     """
     extract the continuum around the oii line for all the sources in the input folder
     """
@@ -379,7 +391,8 @@ def substract_continuum_on_ids(ids, input_path, output_path, snr_min = 15, line 
         os.makedirs(output_path_field, exist_ok=True)
 
         try:    
-            fig = substract_continuum(src_input_path, output_path, snr_min = snr_min, line = line)
+            fig = substract_continuum(src_input_path, output_path, snr_min = snr_min, line = line, family = family,\
+                                     mask_neighb = mask_neighb)
         except:
             print(" !!!!!!!!!!!!!!! CONTINUUM SUBSTRACTION FAILED !!!!!!!!!!!!!!!!!!")
 
@@ -493,15 +506,15 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
     if autorun == True:
         gk = galpak.autorun(cube_to_fit, model=model, instrument=instru, **kwargs)
         print("running")
-    else:
+    elif (decomp == True):
         gk = galpak.GalPaK3D(cube_to_fit, model=model, instrument=instru)
-        
         gk.run_mcmc(min_boundaries = pmin, max_boundaries = pmax, **kwargs)
         #gk.run_mcmc(min_boundaries = pmin, max_boundaries = pmax, **kwargs)
+    else: 
+        gk = galpak.GalPaK3D(cube_to_fit, model=model, instrument=instru)
+        gk.run_mcmc(**kwargs)
         
         
-
-    #gk = galpak.run(cube_nocont, instrument=instru, **kwargs)
 
     if save == True:
         # We save the galpak files in a dedicated output folder
@@ -1026,6 +1039,10 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
                        group_threshold = group_threshold)
     #print(dr2["field_id"].unique())
     
+    # We compute the velocity dispersin at 2Re:
+    if decomp == True:
+        galpak_res["velocity_dispersion_2Rd"] = ((0.15*galpak_res["v22"].astype(float))**2 + (galpak_res["velocity_dispersion"].astype(float))**2)**0.5
+    
     # Then we match with the galpak results:
     print("match with galpak results")
     R = match_DR2(galpak_res, dr2)
@@ -1470,6 +1487,8 @@ def build_all_continuum(field_list, input_path, output_path, mag_sdss_r_max = 26
 #-----------------------------------------
 
 def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=2., overwrite = False):
+    """'ha' for Halpha, 'hb' for Hbeta, 'hg' for Hgamma, 'hd' for Hdelta, 'n2' for NII6548 and NII6583, 's2' for SII6716 and SII6731, 'o2' for OII, 'o3' for OIII4959 and OIII5007"""
+    
     # we open the source file:
     src = Source.from_file(src_path)
     src_name = src_path[-28:-5] # the source name in the format "JxxxxXxxxx_source_xxxxx"
@@ -1601,7 +1620,7 @@ def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw
         img_disp = hdul_disp[0].data
         mask_obj = src.images["MASK_OBJ"]
         ma = mask_obj.data
-        m = np.where(img_snr>4, 1, 0)
+        m = np.where(img_snr>2, 1, 0)
 
         kpc_per_arcsec = cosmo.kpc_proper_per_arcmin(z_src).value/60
         extent_arcsec = np.array([-0.2*15, 0.2*15,-0.2*15, 0.2*15])
@@ -1666,7 +1685,7 @@ def build_velocity_map_all(field_list, input_path, output_path, snr_min = 15, co
     return 
 #----------------------------------------------------
 
-def build_velocity_map_on_ids(input_path, output_path, ids, snr_min = 15, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=0, overwrite = False):
+def build_velocity_map_on_ids(input_path, output_path, ids, line = "OII", snr_min = 15, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=0, overwrite = False):
 
     """
     build the velocity maps for a list of IDs.
@@ -1692,7 +1711,7 @@ def build_velocity_map_on_ids(input_path, output_path, ids, snr_min = 15, common
         # First we open the source:
         src = Source.from_file(src_path)
         try:    
-            fig = build_velocity_map(src_path, output_path, snr_min = snr_min, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth, overwrite = overwrite)
+            fig = build_velocity_map(src_path, output_path, line = line, snr_min = snr_min, commonw=commonw, dv=dv, dxy=dxy, deltav=deltav, initw=initw, wmin=wmin, wmax=wmax, dfit=dfit, degcont=degcont, sclip=sclip, xyclip=xyclip, nclip=nclip, wsmooth=wsmooth, ssmooth=ssmooth, overwrite = overwrite)
                 #if fig != 0:
                 #    pdf.savefig(fig)
         except:
@@ -1793,6 +1812,51 @@ def isolated_auto(df, b_max = 100, b_sep = 30, dv = 1e6, group_threshold = 4):
         isol.append(p)
     ISOL = np.array(isol)
     R["isolated_auto"] = ISOL
+    return R
+
+
+#----------------------------------------
+def isolated_auto_modif3(df, Mh = 1e12, b_sep = 30, dv = 1e6, group_threshold = 4, logm_sat = 9):
+    R = df.copy()
+    isol = []
+    isol_dist = []
+    Rfov = []
+    
+    for i, r in R.iterrows():
+        p = 0
+        b_max = get_Rvir(Mh, r["Z"]).value
+        
+        # a galaxy can be primary only if within 100kpc
+        if (r["sed_logMass"] > logm_sat) and (r["B_KPC"] < b_max) and (r["is_QSO"] == 0) and \
+        (r["is_star"] == 0) and (r["Z"]< 1.5):
+            # we then compute the number of neighbours within B + b_sep kpc:
+            f1 = np.abs(R["Z"] - r["Z"])*const.c.value/(1+r["Z"])<dv
+            f2 = R["field_id"] == r["field_id"]
+            f3 = R["B_KPC"] <= r["B_KPC"] + b_sep
+            f4 = R["B_KPC"] <= b_max
+            f5 = R["sed_logMass"] > logm_sat
+            Fbmax = R[f1 & f2 & f4 & f5]
+            Fbsep = R[f1 & f2 & f3 & f5]
+            
+            # We don't consider galaxies in groups as primary:
+            if r["N2000_LOS"] <= group_threshold:
+                # to be primary, the galaxy must alone.. 
+                if (len(Fbmax) == 1) & (len(Fbsep)==1):
+                    p = 1
+                # .. or the closest one (not taking into account satellites)
+                else:
+                    p = 0
+        isol.append(p)
+        isol_dist.append(b_max)
+        Rfov.append((cosmo.kpc_proper_per_arcmin(r["Z"])/2).value)
+        
+    ISOL = np.array(isol)
+    ISOL_DIST = np.array(isol_dist)
+    RFOV = np.array(Rfov)
+
+    R["isolated_auto"] = ISOL
+    R["isolation_dist"] = ISOL_DIST
+    R["Rfov"] = RFOV
     return R
 
 #------------------------------------------
@@ -2103,6 +2167,13 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
         #print(type(run_name))
         if type(run_name) is str:
             run_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+str(run_name)+"/"
+            src_dir = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"
+            src_file = src_dir + field_id +"_source-"+str(src_id)+"_OII_cube_nocont.fits"
+            hdul = fits.open(src_file)
+            data = hdul[1].data
+            dd = data.sum(axis = 0)
+            smoothed_data = gaussian_filter(dd, sigma=1)
+            #plt.imshow(smoothed_data)
             print(run_path)
 
             # For the measured flux:
@@ -2116,8 +2187,16 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
             # For the convergence:
             img_conv = plt.imread(run_path + "run_mcmc.png")
 
-            ax_meas.imshow(img_measured)
-            ax_meas.axis("off")
+            kpc_per_arcsec = cosmo.kpc_proper_per_arcmin(z_src).value/60
+            extent_arcsec = np.array([-0.2*15, 0.2*15,-0.2*15, 0.2*15])
+            extent_kpc = extent_arcsec*kpc_per_arcsec
+            ax_meas.imshow(smoothed_data, extent = extent_kpc)
+            divider = make_axes_locatable(ax_meas)
+            #cax = divider.append_axes('right', size='5%', pad=0.05)
+            ax_meas.set_xlabel("x [kpc]", size = 12)
+            ax_meas.set_ylabel("y [kpc]", size = 12)
+            ax_meas.invert_yaxis()
+            #ax_meas.axis("off")
 
             ax_model.imshow(img_model)
             ax_model.axis("off")
@@ -2281,5 +2360,268 @@ def Behroozi(log10Mstar, z):
     return log10Mh
 
 
+def Behroozi_2019_inv(log10Mhalo, z):
+    
+    epsilon0 = -1.435
+    alphalna = -1.732
+    epsilona = 1.831
+    alphaz = 0.178
+    epsilonlna = 1.368
+    beta0 = 0.482
+    epsilonz = -0.217
+    betaa = -0.841
+    M0 = 12.035
+    betaz = -0.471
+    Ma = 4.556
+    delta0 = 0.411
+    Mlna = 4.417
+    gamma0 = -1.034
+    Mz = -0.731
+    gammaa = -3.100
+    alpha0 = 1.963
+    gammaz = -1.055
+    alphaa = -2.316
+    chi2 = 157
+    
+    a = 1/(1+z)
+    epsilon = epsilon0 + epsilona*(a-1) - epsilonlna*np.log(a) + epsilonz*z
+    alpha = alpha0 + alphaa*(a-1) - alphalna*np.log(a) + alphaz*z
+    beta = beta0 + betaa*(a-1) + betaz*z
+    delta = delta0
+    gamma = 10**(gamma0 + gammaa*(a-1) + gammaz*z)
+    
+    M1 = 10**(M0 + Ma*(a-1) - Mlna*np.log(a) + Mz*z)
+    
+    x = log10Mhalo - np.log10(M1)
+    
+    log10Mstar = epsilon - np.log10(10**(-alpha*x) + 10**(-beta*x))\
+                + gamma*np.exp(-0.5*((x/delta)**2)) + np.log10(M1)
+    
+    return log10Mstar
+
+def build_RF_param(df, Rall, Mh = 1e12, dv = 0.5e6):
+    R = df.copy()
+    Nlos = []
+    isol_dist = []
+    Rfov = []
+    max_mass_win = []
+    n_gal_win = []
+    max_logSFR_win = []
+    max_logSSFR_win = []
+    B_heaviest = []
+    B_closest = []
+    mass_closest = []
+    orientation_closest = []
+    #print(len(Rall[Rall["sed_logMass"].isna()]))
+    
+    for i, r in R.iterrows():
+        b_max = get_Rvir(Mh, r["Z"]).value
+        
+        # we then compute the number of neighbours within B + b_sep kpc:
+        f1 = np.abs(Rall["Z"] - r["Z"])*const.c.value/(1+r["Z"])<dv
+        f2 = Rall["field_id"] == r["field_id"]
+        f4 = Rall["B_KPC"] <= b_max
+        #Fbmax = Rall[f1 & f2 & f4]
+        Fbmax = Rall[f1 & f2]
+        smallest_b = np.min(Fbmax["B_KPC"])
+        max_mass = np.max(Fbmax["sed_logMass"])
+        heaviest = Fbmax[Fbmax["sed_logMass"] == max_mass]
+        closest_gal = Fbmax[Fbmax["B_KPC"] == smallest_b]
+        #print(np.max(Fbmax["sed_logMass"]))
+        
+        max_mass_win.append(np.max(Fbmax["sed_logMass"]))
+        n_gal_win.append(len(Fbmax["sed_logMass"]))
+        max_logSFR_win.append(np.max(Fbmax["logSFR"]))
+        max_logSSFR_win.append(np.max(Fbmax["logSSFR"]))
+        mass_closest.append(np.max(closest_gal["sed_logMass"]))
+        orientation_closest.append(np.max(closest_gal["orientation"]))
+        B_closest.append(smallest_b)
+        B_heaviest.append(heaviest.iloc[0]["B_KPC"])
+
+        
+    
+    ISOL_DIST = np.array(isol_dist)
+    RFOV = np.array(Rfov)
+
+    R["max_mass_win"] = np.array(max_mass_win)
+    R["n_gal_win"] = np.array(n_gal_win)
+    R["max_logSFR_win"] = np.array(max_logSFR_win)
+    R["max_logSSFR_win"] = np.array(max_logSSFR_win)
+    R["B_closest"] = np.array(B_closest)
+    R["B_heaviest"] = np.array(B_heaviest)
+    R["mass_closest"] = np.array(mass_closest)
+    R["orientation_closest"] = np.array(orientation_closest)
+    return R
+
+def get_closest(df, dv = 0.5e6, group_threshold = 4, logm_sat = 9, ZCONF_lim = 1):
+    R = df.copy()
+    is_closest = []
+
+    
+    for i, r in R.iterrows():        
+        if (r["sed_logMass"] > logm_sat) and (r["is_QSO"] == 0) and \
+        (r["is_star"] == 0 and (r["ZCONF"]>= ZCONF_lim)):
+            # we then compute the number of neighbours within B + b_sep kpc:
+            f1 = np.abs(R["Z"] - r["Z"])*const.c.value/(1+r["Z"])<dv
+            f2 = R["field_id"] == r["field_id"]
+            f3 = R["sed_logMass"] > logm_sat
+            F = R[f1 & f2 & f3]
+            Bclosest = np.min(F["B_KPC"])
+            
+            # We don't consider galaxies in groups as primary:
+            if (len(F) <= group_threshold) and (r["B_KPC"] == Bclosest):
+                is_closest.append(1)
+            else:
+                is_closest.append(0)
+        else:
+            is_closest.append(0)
+        
+    R["is_closest"] = np.array(is_closest)
+    return R
+
+def FoF(df, D0 = 630, V0 = 400):
+	
+	df["dist_ang"] = Distance(unit=u.kpc, z = df["Z"]).value/((1+df["Z"])**2)
+	df["dist_lum"] = Distance(unit=u.kpc, z = df["Z"]).value
+	df["group_id"] = -df["ID"]
+
+	i = 1
+	ungrouped = df[df["group_id"]<=0]
+
+	while len(ungrouped) != 0:
+		print("iter: ", i, "      nb of ungrouped = ", len(ungrouped))
+		df = df.sort_values(by=["group_id"]) #we order to have negative ID first
+		df = search_companions(df, df.iloc[0], i, D0, V0)
+		ungrouped = df[df["group_id"]<=0]
+		i += 1
+
+	return df
 
 
+def search_companions(df, center, i, D0, V0):
+	#print("search companions, center ID = ", float(center["ID"].values))
+
+	ra = center["RA"]
+	dec = center["DEC"]
+	z = center["Z"]
+	dist = center["dist_ang"]
+
+	c1 = SkyCoord(ra*u.degree, dec*u.degree)
+	c2 = SkyCoord(np.array(df["RA"])*u.degree, np.array(df["DEC"])*u.degree)
+	sep = c1.separation(c2)
+	df["DMEAN"] = (df["dist_ang"]+dist)/2
+	df["D12"] = sep.radian*df["DMEAN"]
+	df["V12"] = const.c.value*(z - df["Z"])/(1+z)/1000
+	
+	Dl = D0
+	Vl = V0
+
+	#Dl = 300 # kpc
+	#Vl = 1e6 # 1000 km/s
+
+	#print(df[["ID", "D12", "V12"]])
+
+	f1 = df["D12"] <= Dl
+	f2 = np.abs(df["V12"]) <= Vl
+
+
+	# we find the new companions
+	df["is_grouped"] = f1 & f2
+	grouped = df[df["is_grouped"] == True] 
+	print("Number of companions found: ", len(grouped))
+	print(grouped[["ID", "group_id"]])
+
+	# we assign the group id to the new companions
+	idx = df.index[df["is_grouped"] == True].tolist() 
+	df.loc[idx, "group_id"] = i 
+
+	# Then we do a recursion on the new companions to find companions of companions
+	if len(grouped) > 1: # if there is not only the center itself:
+		for j, g in grouped.iterrows():
+			if g["ID"] != center["ID"] and g["group_id"] != i:
+				df = search_companions(df, g, i, D0, V0)
+	return df
+
+#---------------------------------
+
+def get_groups(df, N_min = 5, get_ungrouped = False):
+	"""
+	take as an input a dataframe containing all the galaxies and for each of them a group id indicating
+	to which group it belong. It returns a dataframe describing the groups and their properties.
+	If their is an column "outlier", indicating that some galaxies have been excluded thanks to the caustic method (for example), they will
+	automatically be excluded from the groups.
+	
+	get_ungrouped: if True, all the single galaxies will also be included in the result Dataframe with a unique ID for each.
+	"""
+	if "outlier" in df.columns:
+		df = df[df["outlier"] == False]
+
+	gpk = df.groupby(by=["group_id"])
+	gp_FIELD = np.array(gpk.field_id.max())
+	gp_GRP = np.array(gpk.group_id.max())
+	gp_N = np.array(gpk.Z.count())
+	gp_Z_mean = np.array(gpk.Z.mean())
+	gp_RA_mean = np.array(gpk.RA.mean())
+	gp_DEC_mean = np.array(gpk.DEC.mean())
+	#gp_RADIUS = np.array(gpk.Radius_kpc.mean())
+	gp_b_min = np.array(gpk.B_KPC.min())
+
+	data = np.array([gp_FIELD, gp_GRP, gp_N, gp_Z_mean, gp_RA_mean, gp_DEC_mean, gp_b_min])
+	G = pd.DataFrame(data = data.T, columns = ["field_id", "group_id", "N_gal", "mean_z", "mean_ra", "mean_dec", "b_min_kpc"])
+	G = G.astype({"N_gal":"int"})
+	G = G.astype({"b_min_kpc":"float"})
+	
+	G = G.sort_values(by=["N_gal"], ascending = False)
+	f1 = G["N_gal"] >= N_min
+	if get_ungrouped == False:
+		f2 = G["group_id"] != -1
+		G = G[f1 & f2]
+	else:
+		G = G[f1]
+
+	G.reset_index(drop= True, inplace = True)
+
+	return G
+
+def isolated_auto_modif3(df, Mh = 1e12, b_sep = 30, dv = 1e6, group_threshold = 4, logm_sat = 9):
+    R = df.copy()
+    isol = []
+    isol_dist = []
+    Rfov = []
+    
+    for i, r in R.iterrows():
+        p = 0
+        b_max = get_Rvir(Mh, r["Z"]).value
+        
+        # a galaxy can be primary only if within 100kpc
+        if (r["sed_logMass"] > logm_sat) and (r["B_KPC"] < b_max) and (r["is_QSO"] == 0) and \
+        (r["is_star"] == 0) and (r["Z"]< 1.5):
+            # we then compute the number of neighbours within B + b_sep kpc:
+            f1 = np.abs(R["Z"] - r["Z"])*const.c.value/(1+r["Z"])<dv
+            f2 = R["field_id"] == r["field_id"]
+            f3 = R["B_KPC"] <= r["B_KPC"] + b_sep
+            f4 = R["B_KPC"] <= b_max
+            f5 = R["sed_logMass"] > logm_sat
+            Fbmax = R[f1 & f2 & f4 & f5]
+            Fbsep = R[f1 & f2 & f3 & f5]
+            
+            # We don't consider galaxies in groups as primary:
+            if r["N2000_LOS"] <= group_threshold:
+                # to be primary, the galaxy must alone.. 
+                if (len(Fbmax) == 1) & (len(Fbsep)==1):
+                    p = 1
+                # .. or the closest one (not taking into account satellites)
+                else:
+                    p = 0
+        isol.append(p)
+        isol_dist.append(b_max)
+        Rfov.append((cosmo.kpc_proper_per_arcmin(r["Z"])/2).value)
+        
+    ISOL = np.array(isol)
+    ISOL_DIST = np.array(isol_dist)
+    RFOV = np.array(Rfov)
+
+    R["isolated_auto"] = ISOL
+    R["isolation_dist"] = ISOL_DIST
+    R["Rfov"] = RFOV
+    return R
