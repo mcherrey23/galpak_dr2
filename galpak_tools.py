@@ -112,7 +112,7 @@ def get_z_src(src):
 
 #------------------------------------------------------------------------
 
-def substract_continuum(src_path, output_path, snr_min = 15, line="OII", family = "balmer", mask_neighb = False):
+def substract_continuum(src_path, output_path, snr_min = 15, line="OII", family = "balmer", mask_neighb = False, MASK = "none"):
     """
     Take a source file as an input, substract the continuum of the cube around a given line/doublet
     and save the output.
@@ -126,6 +126,7 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII", family 
         - line: the target emission line around which we want to extract the cube. Could be:
                 OII, OIII5007, HALPHA, 
         - mask_neighb: if True, the segmentation map is used to mask the neighbour sources.
+        - MASK: a mask of the same shape as the subcube can be passed and applied to the continuum substracted cube.
         
     output: 
         - a cube of 32 spaxel centered on the emission line.
@@ -245,6 +246,8 @@ def substract_continuum(src_path, output_path, snr_min = 15, line="OII", family 
         else:
             mask = np.ones(src.images["SEGNB_EMI_OII3727"].shape)
 
+        if MASK != "none":
+            mask = mask*MASK
         M = np.repeat(mask[np.newaxis, :, :], l, axis=0) # the 3D mask for the cube
         M_central = np.repeat(mask[np.newaxis, :, :], l_central, axis=0) # the 3D mask for the line cube
         M_nb = np.repeat(mask[np.newaxis, :, :], l_nb, axis=0) # the 3D mask for the narrow band cube
@@ -374,7 +377,8 @@ def substract_all_continuum(field_list, input_path, output_path, snr_min = 15, l
     return
 
 #----------------------------------------------------------------------------
-def substract_continuum_on_ids(ids, input_path, output_path, snr_min = 15, line = "OII", family = "balmer", mask_neighb = False):
+def substract_continuum_on_ids(ids, input_path, output_path, snr_min = 15, line = "OII", family = "balmer", \
+                               mask_neighb = False, MASK = "none"):
     """
     extract the continuum around the oii line for all the sources in the input folder
     """
@@ -390,11 +394,11 @@ def substract_continuum_on_ids(ids, input_path, output_path, snr_min = 15, line 
         src_output_path = output_path_field + src_name+ "/"
         os.makedirs(output_path_field, exist_ok=True)
 
-        try:    
-            fig = substract_continuum(src_input_path, output_path, snr_min = snr_min, line = line, family = family,\
-                                     mask_neighb = mask_neighb)
-        except:
-            print(" !!!!!!!!!!!!!!! CONTINUUM SUBSTRACTION FAILED !!!!!!!!!!!!!!!!!!")
+        #try:    
+        fig = substract_continuum(src_input_path, output_path, snr_min = snr_min, line = line, family = family,\
+                                     mask_neighb = mask_neighb, MASK = MASK)
+        #except:
+        #    print(" !!!!!!!!!!!!!!! CONTINUUM SUBSTRACTION FAILED !!!!!!!!!!!!!!!!!!")
 
     return
 
@@ -469,6 +473,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         myline = None
         
     if (line  != "cont") & (decomp == False):
+        print("line = ", line, myline)
         model = galpak.DiskModel(flux_profile = flux_profile, rotation_curve = rotation_curve, redshift=z_src, thickness_profile = thickness_profile, line = myline)
         cube_nocont_path = src_output_path + src_name + "_"+ line+ "_cube_nocont.fits"
         cube_nocont = Cube(cube_nocont_path)
@@ -1040,8 +1045,8 @@ def match_results_with_catalogs(galpak_res, dr2_path, fields_info_path, Abs_path
     #print(dr2["field_id"].unique())
     
     # We compute the velocity dispersin at 2Re:
-    if decomp == True:
-        galpak_res["velocity_dispersion_2Rd"] = ((0.15*galpak_res["v22"].astype(float))**2 + (galpak_res["velocity_dispersion"].astype(float))**2)**0.5
+    #if decomp == True:
+    galpak_res["velocity_dispersion_2Rd"] = ((0.15*galpak_res["v22"].astype(float))**2 + (galpak_res["velocity_dispersion"].astype(float))**2)**0.5
     
     # Then we match with the galpak results:
     print("match with galpak results")
@@ -1329,10 +1334,10 @@ def get_Nxxx_LOS_all(R, bmax = 100, dv = 0.5e6):
     return R
 
 #-----------------------------------------------------
-def build_continuum_cube(src_path, output_path, mag_sdss_r_max = 26, L_central = 6750, L_central_auto = True):
+def build_continuum_cube(src_path, output_path, mag_sdss_r_max = 26, L_central = 6750, L_central_auto = True, \
+                         mask_neighb = False):
     """
-    Take a source file as an input, substract the continuum of the cube aroud a given line
-    and save the output
+    
     """
 
     # First we open the source:
@@ -1391,53 +1396,61 @@ def build_continuum_cube(src_path, output_path, mag_sdss_r_max = 26, L_central =
 
         # the continuum cube:
         cube_cont = cube[min_pix: max_pix, :, :]
-
-        # We get the source mask:
-        mask_obj = src.images["MASK_OBJ"]
-        ma = mask_obj.data
-        mask = np.ma.getdata(ma)
         l = cube_cont.shape[0]
-        M = np.repeat(mask[np.newaxis, :, :], l, axis=0) # the 3D mask for the continuum cube
+        
+        # We get the segmentation map mask (we exclude other objects):
+        if mask_neighb == True:
+            mask = src.images["SEGNB_EMI_COMBINED"].data
+            mask = (mask<=1).astype(int)
+        else:
+            mask = np.ones(cube_cont.shape)
+
+        M = np.repeat(mask[np.newaxis, :, :], l, axis=0) # the 3D mask for the cube
+        
+        # And the object mask:
+        mask_obj = src.images["MASK_OBJ"]
+        mask_obj = mask_obj.data
+        mask_obj = np.ma.getdata(mask_obj)
+        Mobj = np.repeat(mask_obj[np.newaxis, :, :], l, axis=0) # the 3D mask for the cube
+        
+        
         cube_cont_masked = cube_cont * M
+        cube_cont_objmasked = cube_cont * Mobj
+        ima_white = cube.sum(axis = 0)
         ima_cont = cube_cont.sum(axis=0)
-        spe_cont = cube_cont_masked.sum(axis= (1,2))
+        ima_cont_masked = cube_cont_masked.sum(axis=0)
+
+        spe_cont = cube_cont_objmasked.sum(axis= (1,2))
         spe_cont_mean = cube_cont_masked.mean(axis= (1,2))
 
         # the continuum estimation:
         #continuum = cube_cont_masked.mean(axis = (0,1,2))
-        continuum = cube_cont_masked.mean()
-
-
-        #fsf = src.get_FSF()
-        #psf_fwhm = fsf.get_fwhm(L_oii_1_obs)
-        #lsf_fwhm = (5.835e-8) * L_oii_1_obs ** 2 - 9.080e-4 * L_oii_1_obs + 5.983  # from Bacon 2017
-        #d = np.array([psf_fwhm, lsf_fwhm, oii_3726_snr, oii_3729_snr, snr_max])
-        #col = ["psf_fwhm", "lsf_fwhm", "snr_3726_from_src","snr_3729_from_src", "snr_max"]
-        #df = pd.DataFrame(data = [d], columns = col)
-        #df.to_csv(src_output_path+"/"+"oii_snr.txt", index = False)
+        continuum = cube_cont_objmasked.mean()
 
         # We make a pdf of the continuum:
         pdf_name = src_output_path+"/"+ src_name+"_continuum_" + str(np.round(L_c,0))+".pdf"
         pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_name)
-
-
 
         title = src_name + " z = " + str(np.round(z_src,4))
         fig = plt.figure(figsize=(12, 10))
         fig.suptitle(title)
 
         plt.subplot(221)
-        title_cont = "continuum at " +  str(np.round(L_central,0))+ " = " + str(np.round(continuum*1000, 2)) +"e-20 erg/A/s/cm2/"
-        plt.title(title_cont)
-        ima_cont.plot(scale='arcsinh', colorbar='v', vmin=0, vmax=100)
-
+        ima_white.plot(scale='arcsinh', colorbar='v')
+        
         plt.subplot(222)
+        title_cont = "continuum at " +  str(np.round(L_central,0))+ " = " + str(np.round(continuum*1000, 2)) +\
+        "e-20 erg/A/s/cm2/"
+        plt.title(title_cont)
+        ima_cont_masked.plot(scale='arcsinh', colorbar='v', vmin=0, vmax=100)
+
+        plt.subplot(223)
         title_sp = "continuum spectrum - SDSS r = " + str(np.round(sdss_r,2))
         plt.title(title_sp)
         spe_cont.plot()
 
         cube_cont_path = output_path_field + src_name + "/" + src_name + "_cube_cont" + str(np.round(L_c,0))+".fits"
-        cube_cont.write(cube_cont_path)
+        cube_cont_masked.write(cube_cont_path)
         pdf.savefig(fig)
 
         pdf.close()
@@ -1484,6 +1497,30 @@ def build_all_continuum(field_list, input_path, output_path, mag_sdss_r_max = 26
 
     return
 
+#---------------------------------------
+def build_continuum_on_ids(ids, input_path, output_path, mag_sdss_r_max = 26, L_central = 6750, L_central_auto = True, \
+                         mask_neighb = False):
+    
+
+    for i, r in ids.iterrows():
+        field = r["field_id"]
+        ID = r["ID"]
+        print(ID)
+
+        input_path_field = input_path + field + "/" +"products/sources/"
+        src_name = field + "_source-"+str(ID)
+        src_input_path = input_path_field + src_name +".fits"
+        output_path_field = output_path + field + "/"
+        src_output_path = output_path_field + src_name+ "/"
+        os.makedirs(output_path_field, exist_ok=True)
+
+        #try:    
+        fig = build_continuum_cube(src_input_path, output_path, mag_sdss_r_max = mag_sdss_r_max, \
+                                           L_central = L_central, L_central_auto = L_central_auto, mask_neighb = mask_neighb)
+        #except:
+        #    print(" !!!!!!!!!!!!!!! CONTINUUM CUBE FAILED !!!!!!!!!!!!!!!!!!")
+
+    return
 #-----------------------------------------
 
 def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw=True, dv=500., dxy=15, deltav=2000., initw=50., wmin=30., wmax=250., dfit=100., degcont=0, sclip=10, xyclip=3, nclip=3, wsmooth=0, ssmooth=2., overwrite = False):
@@ -1499,7 +1536,7 @@ def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw
     save_name = "camel_"+line
     camel_path = src_output_path + save_name
     
-    lines_dict = {"HALPHA":"ha", "OII":"o2", "OIII5007": "o3"}
+    lines_dict = {"HALPHA":"ha", "HBETA": "hb", "HDELTA": "hd", "HGAMMA": "hg", "OII":"o2", "OIII5007": "o3"}
     
     output_dir_list = os.listdir(src_output_path)
     if overwrite == False:
@@ -1620,7 +1657,7 @@ def build_velocity_map(src_path, output_path, line = "OII", snr_min = 3, commonw
         img_disp = hdul_disp[0].data
         mask_obj = src.images["MASK_OBJ"]
         ma = mask_obj.data
-        m = np.where(img_snr>2, 1, 0)
+        m = np.where(img_snr>4, 1, 0)
 
         kpc_per_arcsec = cosmo.kpc_proper_per_arcmin(z_src).value/60
         extent_arcsec = np.array([-0.2*15, 0.2*15,-0.2*15, 0.2*15])
@@ -2124,6 +2161,7 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
     """
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+    lines_dict = {"HALPHA":"ha", "HBETA": "hb", "HDELTA": "hd", "HGAMMA": "hg", "OII":"o2", "OIII5007": "o3"}
     k = 0
     pdf_name = output_dir+file_name + ".pdf"
     pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_name)
@@ -2131,6 +2169,11 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
         field_id = r["field_id"]
         src_id = r["ID"] 
         run_name = r["run_name"]
+        print(r["run_name"])
+        try:
+            line = (r["run_name"]).split("_")[1]
+        except:
+            line = "Nan"
         z_src = r["Z"]
         REW2796 =r["REW_2796"]
         B_KPC = r["B_KPC"]
@@ -2165,10 +2208,10 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
         fig.suptitle(title)
 
         #print(type(run_name))
-        if type(run_name) is str:
+        if type(run_name) is str and "cont" not in run_name:
             run_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+str(run_name)+"/"
             src_dir = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"
-            src_file = src_dir + field_id +"_source-"+str(src_id)+"_OII_cube_nocont.fits"
+            src_file = src_dir + field_id +"_source-"+str(src_id)+"_"+line+"_cube_nocont.fits"
             hdul = fits.open(src_file)
             data = hdul[1].data
             dd = data.sum(axis = 0)
@@ -2206,8 +2249,8 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
 
             # For the velmap:
             try:
-                vel = "camel_OII/camel_"+ str(src_id) +"_"+"o2_ssmooth" +"_vel_common.fits"
-                snr = "camel_OII/camel_"+ str(src_id) +"_"+"o2_ssmooth" +"_snr_common.fits"
+                vel = "camel_"+line+"/camel_"+ str(src_id) +"_"+lines_dict[line]+"_ssmooth" +"_vel_common.fits"
+                snr = "camel_"+line+"/camel_"+ str(src_id) +"_"+lines_dict[line]+"_ssmooth" +"_snr_common.fits"
                 velmap_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+vel
                 snr_path = run_dir + field_id +"/"+field_id +"_source-"+str(src_id)+"/"+snr
                 hdul_vel = fits.open(velmap_path)
@@ -2242,9 +2285,6 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
 
         fig.savefig(pdf, format='pdf')
 
-        #print(run_img)
-        #plt.figure()
-        #plt.imshow(img_model_conv)
     pdf.close()
     
     
