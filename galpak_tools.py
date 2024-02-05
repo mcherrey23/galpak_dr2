@@ -19,6 +19,12 @@ from astropy.cosmology import WMAP9 as cosmo
 from scipy.stats import binned_statistic
 from scipy.ndimage import gaussian_filter
 import matplotlib.backends.backend_pdf
+from scipy.optimize import minimize
+import math
+from scipy import integrate
+import scipy
+from scipy.stats import norm
+
 
 import mpdaf
 from mpdaf.obj import Cube
@@ -2218,14 +2224,21 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
             smoothed_data = gaussian_filter(dd, sigma=1)
             #plt.imshow(smoothed_data)
             print(run_path)
+            kpc_per_arcsec = cosmo.kpc_proper_per_arcmin(z_src).value/60
+            extent_arcsec = np.array([-0.2*15, 0.2*15,-0.2*15, 0.2*15])
+            extent_kpc = extent_arcsec*kpc_per_arcsec
 
             # For the measured flux:
             img_run = plt.imread(run_path + "run_images.png")
             img_measured = img_run[10:320, 140:440]
 
             # For the model:
-            img_model = plt.imread(run_path + "run_obs_maps.png")
-            img_model = img_model[50:320, 430:730]
+            hdulist = fits.open(run_path + "run_obs_vel_map.fits")
+            img_model = hdulist[0].data
+            hdulist.close()
+            #plt.imshow(image_data, cmap='bwr')
+            #img_model = plt.imread(run_path + "run_obs_maps.png")
+            #img_model = img_model[50:320, 430:730]
 
             # For the convergence:
             img_conv = plt.imread(run_path + "run_mcmc.png")
@@ -2241,8 +2254,11 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
             ax_meas.invert_yaxis()
             #ax_meas.axis("off")
 
-            ax_model.imshow(img_model)
-            ax_model.axis("off")
+            ax_model.imshow(img_model, cmap = "bwr", vmin = -150, vmax = 150, extent = extent_kpc)
+            ax_model.invert_yaxis()
+            ax_model.set_xlabel("x [kpc]", size = 12)
+            ax_model.set_ylabel("y [kpc]", size = 12)
+            #ax_model.axis("off")
 
             ax_conv.imshow(img_conv)
             ax_conv.axis("off")
@@ -2259,10 +2275,6 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
                 img_snr = hdul_snr[0].data
                 m = np.where(img_snr>4, 1, 0)
 
-                kpc_per_arcsec = cosmo.kpc_proper_per_arcmin(z_src).value/60
-                extent_arcsec = np.array([-0.2*15, 0.2*15,-0.2*15, 0.2*15])
-                extent_kpc = extent_arcsec*kpc_per_arcsec
-
                 divider = make_axes_locatable(ax_velmap)
                 cax = divider.append_axes('right', size='5%', pad=0.05)
                 im = ax_velmap.imshow(img_vel*m, vmin = -150, vmax = 150, cmap = "bwr", extent = extent_kpc)
@@ -2271,7 +2283,7 @@ def build_catalog(rr, run_dir, output_dir, file_name = "primary_catalog"):
                 ax_velmap.set_xlabel("x [kpc]", size = 12)
                 ax_velmap.set_ylabel("y [kpc]", size = 12)
                 ax_velmap.invert_yaxis()
-                #fig.savefig(pdf, format='pdf')
+                
             except:
                 print(src_id, ": no vel. map")
                 #plt.subplot(133)
@@ -2665,3 +2677,145 @@ def isolated_auto_modif3(df, Mh = 1e12, b_sep = 30, dv = 1e6, group_threshold = 
     R["isolation_dist"] = ISOL_DIST
     R["Rfov"] = RFOV
     return R
+
+
+#--------------------------------
+
+def logL_Hogg_total(param, x1, y1, sig_x1, sig_y1, x2, y2, sig_x2, sig_y2):
+    theta = np.arctan(param[1])
+    #print(sig_y1[0])
+    N1 = len(x1)
+    LL = 0
+    
+    for i in range(N1):
+        xi = x1[i]
+        yi = y1[i]
+        sig_xi = sig_x1[i]
+        sig_yi = sig_y1[i]
+        Deltai_2 = (-np.sin(theta)*xi + np.cos(theta)*yi - np.cos(theta)*param[0])**2
+        Sigmai_2 = (np.sin(theta))**2*sig_xi**2 + (np.cos(theta))**2*sig_yi**2
+        LL += -Deltai_2/Sigmai_2/2
+        
+    N2 = len(x2)
+    for i in range(N2):
+        xi = x2[i]
+        yi = y2[i]
+        sig_xi = sig_x2[i]
+        sig_yi = sig_y2[i]
+        Deltai_2 = (-np.sin(theta)*xi + np.cos(theta)*yi - np.cos(theta)*param[0])**2
+        Sigmai_2 = (np.sin(theta))**2*sig_xi**2 + (np.cos(theta))**2*sig_yi**2
+        X = -(Deltai_2/Sigmai_2/2)**0.5
+        I = 0.5*(1 + math.erf(X))
+        LL += np.log(I)    
+    return -LL
+
+
+def model(param, x):
+    # y = ax +b
+    return param[0] + param[1]*x
+
+def logL_total(param, x1, y1, sig_x1, sig_y1, x2, y2, sig_x2, sig_y2):
+    #ymodel1 = param[0] + x1*param[1]
+    ymodel1 = model(param, x1)
+    LL1 = -0.5*((y1 - ymodel1)/sig_y1)**2
+    print("LL1 = ", LL1)
+    LL1 = np.sum(LL1)
+
+    print("1st part = ", LL1)
+        
+    N2 = len(x2)
+    L2 = []
+    LL2 = []
+    for i in range(N2):
+        xi = x2[i]
+        yi = y2[i]
+        sig_xi = sig_x2[i]
+        sig_yi = sig_y2[i]
+        #ymodeli = param[0] + xi*param[1]
+        ymodeli = model(param, xi)
+        Li = 0.5*(1+math.erf((yi - ymodeli)/(sig_yi*2**0.5)))
+        lli = np.log(Li)
+        L2.append(Li)
+        LL2.append(lli)
+    L2 = np.array(L2)
+    LL2 = np.array(LL2)
+    print("L2 = ", L2)
+    print("LL2 = ", LL2)
+    LL2 = np.sum(LL2)
+    print("2nd part = ", LL2)
+    print("LL total = ", LL1+LL2)
+    return -(LL1+LL2)
+
+def fit(x1, y1, sig_x1, sig_y1, x2, y2, sig_x2, sig_y2, init_param = np.array([0,-0.015]), Niter = 5):
+    sigma_intrinsic_start = 0
+    sigma_intrinsic = sigma_intrinsic_start
+    sigma_intrinsic_list = [sigma_intrinsic]
+    
+    print("shapes: ", len(x1), len(y1), len(x2), len(y2))
+    for i in range(Niter):
+        print("N = ", i)
+        #sig_y1_mi = np.array(R_abs["sig_REW_2796"]/R_abs["REW_2796"])
+        sig_y1_full = (sig_y1**2 + sigma_intrinsic**2)**0.5
+        sig_y2_full = (sig_y2**2 + sigma_intrinsic**2)**0.5
+
+        res = minimize(logL_total, init_param, \
+                                   args = (x1, y1, sig_x1, sig_y1_full, x2, y2, sig_x2, sig_y2_full), method='BFGS')
+        sigma_intrinsic = calc_sigma_intrisic(y1, model(res['x'], x1), sig_y1)
+        print(sigma_intrinsic)
+        sigma_intrinsic_list.append(sigma_intrinsic)
+    plt.plot(sigma_intrinsic_list)
+    return res, sigma_intrinsic
+
+def calc_sigma_intrisic(yi, modeled_yi, sigma_mi):
+    print("CALC SIGMA INTRINSIC")
+    
+    mean_residual = np.mean(yi-modeled_yi)
+    intrisic_i = (yi - modeled_yi - mean_residual)**2 - sigma_mi**2
+    sigma_intri = np.median(intrisic_i) 
+    return sigma_intri**0.5
+
+def logL_stats_total(param, x, y, sig_y, xsup, ysup, sig_ysup):
+    residuals = (param[0] + x*param[1]) - y
+    log_likelihood = np.sum(norm.logpdf(residuals, scale = (sig_y**2 + param[2]**2)**0.5))
+    
+    residuals_sup = ysup - (param[0] + xsup*param[1])
+    log_likelihood_sup = np.sum(norm.logcdf(residuals_sup, scale = (sig_ysup**2 + param[2]**2)**0.5))
+    
+    return -(log_likelihood + log_likelihood_sup)
+
+def logL_stats(param, x, y, sig_y, xsup, ysup, sig_ysup):
+    residuals = (param[0] + x*param[1]) - y
+    log_likelihood = np.sum(norm.logpdf(residuals, scale = sig_y))
+    
+    residuals_sup = ysup - (param[0] + xsup*param[1])
+    log_likelihood_sup = np.sum(norm.logcdf(residuals_sup, scale = sig_ysup))
+    
+    return -(log_likelihood + log_likelihood_sup)
+
+
+def logL_stats_total_multi(param, x, y, sig_y, xsup, ysup, sig_ysup):
+    residuals = model_multi(param, x) - y
+    log_likelihood = np.sum(norm.logpdf(residuals, scale = (sig_y**2 + param[5]**2)**0.5))
+    
+    residuals_sup = ysup - model_multi(param, xsup)
+    #print(residuals_sup.shape, sig_ysup.shape)
+    log_likelihood_sup = np.sum(norm.logcdf(residuals_sup, scale = (sig_ysup**2 + param[5]**2)**0.5))
+    
+    return -(log_likelihood + log_likelihood_sup)
+
+def model_multi(param, x):
+    return param[0] + param[1]*x[0,:] + param[2]*x[1,:] + param[3]*x[2,:] + param[4]*x[3,:]
+
+    
+def predict_z(params, bb, sfr = 0, logm = 9, rew = 0.1):
+    v = (np.log10(rew) - params[0]- bb*params[1] - sfr*params[3] - logm*params[4])/params[2]
+    return v
+    
+def predict_sfr(params, bb, z = 1, logm = 9, rew = 0.1):
+    v = (np.log10(rew) - params[0]- bb*params[1] - z*params[2] - logm*params[4])/params[3]
+    return v
+
+def predict_logm(params, bb, z = 1, sfr = 0, rew = 0.1):
+    v = (np.log10(rew) - params[0]- bb*params[1] - z*params[2] - sfr*params[3])/params[4]
+    return v
+    
