@@ -500,7 +500,7 @@ def run_galpak(src_path, output_path, flux_profile = "sersic", rotation_curve = 
         #model = galpak.DiskModel()
         pmin = model.Parameters()
         pmax = model.Parameters()
-        pmin.log_X = -3
+        pmin.log_X = -3.
         pmax.log_X = -1.2
         #pmin.sersic_n = 0.2
         #pmax.sersic_n = 5
@@ -647,69 +647,70 @@ def run_galpak_on_ids(input_path, output_path, ids, snr_min = 15, mag_sdss_r_max
         print(k, "/", N)
         field = r["field_id"]
         ID = r["ID"]
+        
+        try: 
+            input_path_field = input_path + field + "/" +"products/sources/"
+            src_name = field + "_source-"+str(ID)
+            src_path = input_path_field + src_name +".fits"
+            output_path_field = output_path + field + "/"
+            src_output_path = output_path_field + src_name+ "/"
+            print(src_name, src_path)
+            print(src_output_path)
 
-        input_path_field = input_path + field + "/" +"products/sources/"
-        src_name = field + "_source-"+str(ID)
-        src_path = input_path_field + src_name +".fits"
-        output_path_field = output_path + field + "/"
-        src_output_path = output_path_field + src_name+ "/"
-        print(src_name, src_path)
-        print(src_output_path)
+            # First we open the source:
+            src = Source.from_file(src_path)
 
-        # First we open the source:
-        src = Source.from_file(src_path)
+            # we get the SNR:
+            #try:
+            #print(src_output_path+"oii_snr.txt")
+            snr_df = pd.read_csv(src_output_path+line+"_snr.txt", sep = ",", index_col= None)
+            snr_s = snr_df.squeeze()
+            #print(oii_snr_s)
+            snr_from_src = snr_s["snr_from_src"]
+            snr_max = snr_s["snr_max"] 
+            #oii_snr = get_line_feature(src, line="OII3726", feature="SNR")
+            print(line + " SNR from src = ", snr_from_src, "  max = ", snr_max)
+            #except:
+            #    oii_3726_snr_from_src = 0
+            #    oii_snr_max = 0
+            #    print("WARNING: No oii SNR")
 
-        # we get the SNR:
-        #try:
-        #print(src_output_path+"oii_snr.txt")
-        snr_df = pd.read_csv(src_output_path+line+"_snr.txt", sep = ",", index_col= None)
-        snr_s = snr_df.squeeze()
-        #print(oii_snr_s)
-        snr_from_src = snr_s["snr_from_src"]
-        snr_max = snr_s["snr_max"] 
-        #oii_snr = get_line_feature(src, line="OII3726", feature="SNR")
-        print(line + " SNR from src = ", snr_from_src, "  max = ", snr_max)
-        #except:
-        #    oii_3726_snr_from_src = 0
-        #    oii_snr_max = 0
-        #    print("WARNING: No oii SNR")
+            #print("snr_min = ", snr_min)
+            if line != "cont":
+                if snr_from_src >= snr_min:
+                    print("**** RUN GALPAK")
+                    try: 
+                        run_galpak(src_path, output_path, \
+                           flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
+                       save = save, line = line, overwrite = overwrite, suffix = suffix, decomp = decomp,\
+                               thickness_profile = thickness_profile, rotation_curve_DM = rotation_curve_DM,\
+                              rotation_curve_disk = rotation_curve_disk, rotation_curve_gas= rotation_curve_gas, \
+                              rotation_curve_bulge= rotation_curve_bulge, adrift = adrift, dispersion_profile = dispersion_profile,\
+                           **kwargs)
 
-        #print("snr_min = ", snr_min)
-        if line != "cont":
-            if snr_from_src >= snr_min:
-                print("**** RUN GALPAK")
-                #try: 
-                run_galpak(src_path, output_path, \
-                       flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
-                   save = save, line = line, overwrite = overwrite, suffix = suffix, decomp = decomp,\
-                           thickness_profile = thickness_profile, rotation_curve_DM = rotation_curve_DM,\
-                          rotation_curve_disk = rotation_curve_disk, rotation_curve_gas= rotation_curve_gas, \
-                          rotation_curve_bulge= rotation_curve_bulge, adrift = adrift, dispersion_profile = dispersion_profile,\
-                       **kwargs)
-                
-                #except:
-                #    print(" !!!! RUN galpak FAILED !!!!")
+                    except:
+                        print(" !!!! RUN galpak FAILED !!!!")
 
-        else:
-            try:
-                t = src.tables["SPECPHOT_DR2"]
-                tt = t[t["ID"] == src.header["ID"]]
-                sdss_r = tt["mag_SDSS_r"][0]
-            except:
-                sdss_r = 99
-                print("WARNING: No SDSS mag")
-
-            if sdss_r <= mag_sdss_r_max:
-                print("**** RUN GALPAK")
-                try: 
-                    run_galpak(src_path, output_path, \
-                               flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
-                           save = save, line = line, overwrite = overwrite,\
-                               **kwargs)
+            else:
+                try:
+                    t = src.tables["SPECPHOT_DR2"]
+                    tt = t[t["ID"] == src.header["ID"]]
+                    sdss_r = tt["mag_SDSS_r"][0]
                 except:
-                    print(" !!!! RUN FAILED !!!!")
-        #except:
-        #    print(" !!!! RUN FAILED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                    sdss_r = 99
+                    print("WARNING: No SDSS mag")
+
+                if sdss_r <= mag_sdss_r_max:
+                    print("**** RUN GALPAK")
+                    try: 
+                        run_galpak(src_path, output_path, \
+                                   flux_profile = flux_profile, rotation_curve = rotation_curve, autorun = autorun,\
+                               save = save, line = line, overwrite = overwrite,\
+                                   **kwargs)
+                    except:
+                        print(" !!!! RUN FAILED !!!!")
+        except:
+            print(" !!!! RUN FAILED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         k+=1
     return
 
@@ -2053,37 +2054,47 @@ def calc_SFR(R):
     R2["dist_lum"] = Distance(unit=u.m, z = np.array(R2["Z"])).value
     
     R2["OII_flux"] = R2["OII3726_FLUX"] + R2["OII3729_FLUX"]
+    R2["OII_flux_ERR"] = R2["OII3726_FLUX_ERR"] + R2["OII3729_FLUX_ERR"]
     R2["OII_flux_lim"] = 300
     R2["OII_lum"] = 4*np.pi*R2["OII_flux"]*1e-20*((R2["dist_lum"]*1e2)**2) # the 1e2 is to have cm2 like in the flux.
+    R2["OII_lum_ERR"] = 4*np.pi*R2["OII_flux_ERR"]*1e-20*((R2["dist_lum"]*1e2)**2) # the 1e2 is to have cm2 like in the flux.
     R2["OII_lum_lim"] = 4*np.pi*300*1e-20*((R2["dist_lum"]*1e2)**2) # the 1e2 is to have cm2 like in the flux.
     #R["sed_logMass_lim"] = 6 # set a value according to the sed fitting lim
     
     idx = R2.index[R2["OII_flux"].isna()].to_list()
     R2.loc[idx, "OII_flux"] = 0
-    R2["SFR_gilbank"] = SFR_Gilbank(R2["sed_logMass"], R2["OII_lum"])
+    
+    R2["sed_logMass_ERR"] = 0.25*((R["sed_logMass"] - R["sed_logMass_l95"]) + \
+                                      (R["sed_logMass_u95"] - R["sed_logMass"])) # the 0.25 is  1/2 * 1/2: first one to take 1 sigma instead of 2 sigma, the second one to have the mean of the upper and lower value. Here it is un unaccurate calculation, to have a order of magnitude.
+    R2["SFR_gilbank"], R2["SFR_gilbank_ERR"] = SFR_Gilbank(R2["sed_logMass"], R2["sed_logMass_ERR"],\
+                                                           R2["OII_lum"], R2["OII_lum_ERR"])
     
     # Then we add a column that indicate the SFR detection limit 
     SFR_lim = []
     
     for i, r in R2.iterrows():
         if np.isnan(r["sed_logMass"]):
-            SFR_lim.append(SFR_Gilbank(6, r["OII_lum_lim"]))
+            sfr_lim, sfr_lim_err = SFR_Gilbank(6, 0, r["OII_lum_lim"], r["OII_lum_ERR"])
+            SFR_lim.append(sfr_lim)
         else:
-            SFR_lim.append(SFR_Gilbank(r["sed_logMass"], r["OII_lum_lim"]))
+            sfr_lim, sfr_lim_err = SFR_Gilbank(r["sed_logMass"], r["sed_logMass_ERR"], r["OII_lum_lim"], r["OII_lum_ERR"])
+            SFR_lim.append(sfr_lim)
 
     R2["SFR_gilbank_lim"] = np.array(SFR_lim)
     
     return R2
 
 #------------------------------------
-def SFR_Gilbank(logMstar, LOII):
+def SFR_Gilbank(logMstar,logMstar_err, LOII, LOII_err):
     a = -1.424
     b = 9.827
     c = 0.572
     d = 1.7
     lnorm = 3.8e40
     SFR = LOII/lnorm/(a*np.tanh((logMstar-b)/c)+d)
-    return SFR
+    SFR_err = LOII_err*np.abs(1/(lnorm*a*np.tanh((logMstar-b)/c)+d)) + \
+            logMstar_err*np.abs(lnorm*a*(1-(np.tanh((logMstar-b)/c))**2)/((lnorm*a*np.tanh((logMstar-b)/c)+d)**2))
+    return SFR, SFR_err
 
 
 #---------------------------
@@ -2783,6 +2794,23 @@ def logL_stats_total(param, x, y, sig_y, xsup, ysup, sig_ysup):
     
     return -(log_likelihood + log_likelihood_sup)
 
+def logL_stats_total2(param, x, y, sig_y, xsup, ysup, sig_ysup):
+    """
+    y and sig_y must be given in linear scale (not log)
+    sigma intinsic is added linearly to the 
+    """
+    residuals = (param[0] + x*param[1]) - np.log10(y)
+    #sig_tot = (sig_y**2 + param[2]**2)**0.5/y/np.log(10)
+    sig_tot = ((sig_y**2)/y/np.log(10) + param[2]**2)**0.5
+    log_likelihood = np.sum(norm.logpdf(residuals, scale = sig_tot))
+    
+    #sig_tot_sup = (sig_ysup**2 + param[2]**2)**0.5/ysup/np.log(10)  
+    sig_tot_sup = ((sig_ysup**2)/ysup/np.log(10) + param[2])**0.5                       
+    residuals_sup = np.log10(ysup) - (param[0] + xsup*param[1])
+    log_likelihood_sup = np.sum(norm.logcdf(residuals_sup, scale = sig_tot_sup))
+    #print(log_likelihood, log_likelihood_sup)
+    return -(log_likelihood + log_likelihood_sup)
+
 def logL_stats(param, x, y, sig_y, xsup, ysup, sig_ysup):
     residuals = (param[0] + x*param[1]) - y
     log_likelihood = np.sum(norm.logpdf(residuals, scale = sig_y))
@@ -2794,6 +2822,23 @@ def logL_stats(param, x, y, sig_y, xsup, ysup, sig_ysup):
 
 
 def logL_stats_total_multi(param, x, y, sig_y, xsup, ysup, sig_ysup):
+    dim = len(param)
+    residuals = model_multi(param, x) - y
+    log_likelihood = np.sum(norm.logpdf(residuals, scale = (sig_y**2 + param[dim-1]**2)**0.5))
+    
+    residuals_sup = ysup - model_multi(param, xsup)
+    #print(residuals_sup.shape, sig_ysup.shape)
+    log_likelihood_sup = np.sum(norm.logcdf(residuals_sup, scale = (sig_ysup**2 + param[dim-1]**2)**0.5))
+    
+    return -(log_likelihood + log_likelihood_sup)
+
+## Likelihood for multiparam fit. Using the Hogg 2010 transformation -----------
+
+def logL_Hogg_total2(param, x1, y1, sig_x1, sig_y1, x2, y2, sig_x2, sig_y2):
+    """
+    Multi parametric fit using the Hogg 2010 transformation to take into account vertical + horizontal uncertainties.
+    DO NOT USE. WIP.
+    """
     residuals = model_multi(param, x) - y
     log_likelihood = np.sum(norm.logpdf(residuals, scale = (sig_y**2 + param[5]**2)**0.5))
     
@@ -2801,21 +2846,89 @@ def logL_stats_total_multi(param, x, y, sig_y, xsup, ysup, sig_ysup):
     #print(residuals_sup.shape, sig_ysup.shape)
     log_likelihood_sup = np.sum(norm.logcdf(residuals_sup, scale = (sig_ysup**2 + param[5]**2)**0.5))
     
-    return -(log_likelihood + log_likelihood_sup)
+    theta = np.arctan(param[1])
+    #print(sig_y1[0])
+    N1 = len(x1)
+    LL = 0
+    
+    for i in range(N1):
+        xi = x1[i]
+        yi = y1[i]
+        sig_xi = sig_x1[i]
+        sig_yi = sig_y1[i]
+        Deltai_2 = (-np.sin(theta)*xi + np.cos(theta)*yi - np.cos(theta)*param[0])**2
+        Sigmai_2 = (np.sin(theta))**2*sig_xi**2 + (np.cos(theta))**2*sig_yi**2
+        LL += -Deltai_2/Sigmai_2/2
+        
+    N2 = len(x2)
+    for i in range(N2):
+        xi = x2[i]
+        yi = y2[i]
+        sig_xi = sig_x2[i]
+        sig_yi = sig_y2[i]
+        Deltai_2 = (-np.sin(theta)*xi + np.cos(theta)*yi - np.cos(theta)*param[0])**2
+        Sigmai_2 = (np.sin(theta))**2*sig_xi**2 + (np.cos(theta))**2*sig_yi**2
+        X = -(Deltai_2/Sigmai_2/2)**0.5
+        I = 0.5*(1 + math.erf(X))
+        LL += np.log(I)    
+    return -LL
+
+#------------------------------------------
 
 def model_multi(param, x):
-    return param[0] + param[1]*x[0,:] + param[2]*x[1,:] + param[3]*x[2,:] + param[4]*x[3,:]
+    #return param[0] + param[1]*x[0,:] + param[2]*x[1,:] + param[3]*x[2,:] + param[4]*x[3,:]
+    return param[0] + np.dot(param[1:-1], x)
 
     
-def predict_z(params, bb, sfr = 0, logm = 9, rew = 0.1):
+def predict_z(fit, z, sfr = 0, logm = 9, rew = 0.1):
+    params = fit["x"]
+    fit_1sig = np.diag(fit.hess_inv)**0.5
     v = (np.log10(rew) - params[0]- bb*params[1] - sfr*params[3] - logm*params[4])/params[2]
-    return v
+    sig = (fit_1sig[0]+ bb*fit_1sig[1] + sfr*fit_1sig[3] + logm*fit_1sig[4])/params[2] + v*fit_1sig[2]/params[2]
+    return v, sig
     
-def predict_sfr(params, bb, z = 1, logm = 9, rew = 0.1):
+    
+def predict_sfr(fit, bb, z = 1, logm = 9, rew = 0.1):
+    params = fit["x"]
+    fit_1sig = np.diag(fit.hess_inv)**0.5
     v = (np.log10(rew) - params[0]- bb*params[1] - z*params[2] - logm*params[4])/params[3]
-    return v
+    sig = (fit_1sig[0]+ bb*fit_1sig[1] + z*fit_1sig[2] + logm*fit_1sig[4])/params[3] + v*fit_1sig[3]/params[3]
+    return v, sig
 
-def predict_logm(params, bb, z = 1, sfr = 0, rew = 0.1):
+def predict_logm(fit, bb, z = 1, sfr = 0, rew = 0.1):
+    params = fit["x"]
+    fit_1sig = np.diag(fit.hess_inv)**0.5
     v = (np.log10(rew) - params[0]- bb*params[1] - z*params[2] - sfr*params[3])/params[4]
-    return v
+    sig = (fit_1sig[0]+ bb*fit_1sig[1] + z*fit_1sig[2] + sfr*fit_1sig[3])/params[4] + v*fit_1sig[4]/params[4]
+    return v, sig
+
+def predict_b(fit, eval_at = [0], rew = 0.1):
+#def predict_b(fit, z = 1, sfr = 0, logm = 9, rew = 0.1):
+    params = fit["x"]
+    fit_1sig = (np.diag(fit.hess_inv))**0.5
+    b_rew = (np.log10(rew) - params[0]- np.dot(params[2:-1], eval_at))/params[1]
+    #b_rew = (np.log10(rew) - params[0]- z*params[2] - sfr*params[3] - logm*params[4])/params[1]
+    sig = (fit_1sig[0]+ b_rew*fit_1sig[1] + np.dot(fit_1sig[2:-1], eval_at))/params[1]
+    #sig = (fit_1sig[0]+ b_rew*fit_1sig[1] + z*fit_1sig[2] + sfr*fit_1sig[3] + logm*fit_1sig[4])/params[1]
+    return b_rew, sig
+
+
+def Fukugita(REW_2796, sig_REW_2796, z):
+    """
+    convert a Mg+ equivalent width in NHI column density.
+    """
+    A = 10**18.96
+    a = 1.69
+    b = 1.88
+
+    sig_a = 0.13
+    sig_b = 0.29
+
+    sigma = sig_REW_2796*A*a*(REW_2796)**(a-1)*(1+z)**b + \
+            A*np.log(REW_2796)*(REW_2796)**a*(1+z)**b*sig_a + \
+            A*np.log(1+z)*(REW_2796)**a*(1+z)**b*sig_b
+    
+    return A*(REW_2796)**a*(1+z)**b, sigma
+
+
     
