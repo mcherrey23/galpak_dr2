@@ -2423,6 +2423,38 @@ def Behroozi(log10Mstar, z):
     return log10Mh
 
 
+def Behroozi_2019(log10Mstar, z):
+    """
+    the relation from Behroozi 2019 is inverted to obtain the Mhalo from M*
+    for that we do an interpolation of M* from Mhalo
+    """
+    
+    #print(" M* ==== ", log10Mstar)
+    log10Mh = np.linspace(6,18, 100000)
+    log10Ms = log10Ms = Behroozi_2019_inv(log10Mh, z)
+    
+    if np.isnan(log10Mstar):
+        return np.nan
+    
+    
+    diff = np.abs(log10Ms-log10Mstar)
+    argmin = np.argmin(diff)
+    
+    #print("closest match = ", log10Ms[argmin])
+    # interpolation:
+    if log10Ms[argmin] - log10Mstar >= 0:
+        #print(log10Ms[argmin - 1], log10Mstar, log10Ms[argmin])
+        slope = (log10Mh[argmin] - log10Mh[argmin - 1])/(log10Ms[argmin] - log10Ms[argmin - 1])
+        #print("slope = ", slope)
+        log10Mh_res = log10Mh[argmin - 1] + slope*(log10Mstar-log10Ms[argmin - 1])
+    if log10Ms[argmin] - log10Mstar < 0:
+        #print(log10Ms[argmin], log10Mstar, log10Ms[argmin+1])
+        slope = (log10Mh[argmin+1] - log10Mh[argmin])/(log10Ms[argmin+1] - log10Ms[argmin])
+        #print("slope = ", slope)
+        log10Mh_res = log10Mh[argmin] + slope*(log10Mstar-log10Ms[argmin])
+        
+    return log10Mh_res
+
 def Behroozi_2019_inv(log10Mhalo, z):
     
     epsilon0 = -1.435
